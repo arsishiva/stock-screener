@@ -74,30 +74,40 @@ with st.spinner("Fetching stock data and calculating technical indicators..."):
     df = get_stock_data(TICKERS)
 
 # ---------------------------------------------------------
-# 4. Interactive Sidebar Filters
+# 4. Interactive Sidebar Filters & Safety Check
 # ---------------------------------------------------------
 st.sidebar.header("🔍 Screener Filters")
 
-# Country Filter
-all_countries = ["All"] + list(df["Country"].unique())
-selected_country = st.sidebar.selectbox("Country", all_countries)
+if df.empty:
+    st.error("No stock data could be fetched. Please check your ticker list or internet connection.")
+else:
+    # Country Filter
+    all_countries = ["All"] + list(df["Country"].dropna().unique())
+    selected_country = st.sidebar.selectbox("Country", all_countries)
 
-# Sector Filter
-all_sectors = ["All"] + list(df["Sector"].unique())
-selected_sector = st.sidebar.selectbox("Sector", all_sectors)
+    # Sector Filter
+    all_sectors = ["All"] + list(df["Sector"].dropna().unique())
+    selected_sector = st.sidebar.selectbox("Sector", all_sectors)
 
-# Market Cap Filter
-min_cap, max_cap = float(df["Market Cap ($B)"].min()), float(df["Market Cap ($B)"].max())
-selected_cap = st.sidebar.slider("Minimum Market Cap ($B)", min_value=0.0, max_value=max_cap, value=0.0)
+    # Market Cap Filter (with safe min/max fallback)
+    min_market_cap = float(df["Market Cap ($B)"].min())
+    max_market_cap = float(df["Market Cap ($B)"].max())
 
-# Max P/E Ratio Filter
-selected_pe = st.sidebar.slider("Maximum P/E Ratio", min_value=5.0, max_value=100.0, value=100.0)
+    if min_market_cap == max_market_cap:
+        max_market_cap = min_market_cap + 1.0  # Prevent min == max crash
 
-# RSI Status Filter
-rsi_filter = st.sidebar.selectbox("RSI (14) Status", ["Any", "Oversold (< 30)", "Neutral (30-70)", "Overbought (> 70)"])
+    selected_cap = st.sidebar.slider("Minimum Market Cap ($B)", min_value=min_market_cap, max_value=max_market_cap,
+                                     value=min_market_cap)
 
-# 200 SMA Filter
-sma_filter = st.sidebar.selectbox("Position vs 200 SMA", ["Any", "Above", "Below"])
+    # Max P/E Ratio Filter
+    selected_pe = st.sidebar.slider("Maximum P/E Ratio", min_value=5.0, max_value=100.0, value=100.0)
+
+    # RSI Status Filter
+    rsi_filter = st.sidebar.selectbox("RSI (14) Status",
+                                      ["Any", "Oversold (< 30)", "Neutral (30-70)", "Overbought (> 70)"])
+
+    # 200 SMA Filter
+    sma_filter = st.sidebar.selectbox("Position vs 200 SMA", ["Any", "Above", "Below"])
 
 # ---------------------------------------------------------
 # 5. Apply Filters to the Data
@@ -130,3 +140,4 @@ if sma_filter != "Any":
 # ---------------------------------------------------------
 st.write(f"### Matching Results ({len(filtered_df)})")
 st.dataframe(filtered_df, use_container_width=True)
+
