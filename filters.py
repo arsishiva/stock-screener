@@ -6,7 +6,12 @@ def render_sidebar_filters(stocks_data):
 
     # --- A. Market & Security Info ---
     st.sidebar.subheader("A. Market & Security Info")
-    countries = ["All"] + sorted(list(set(item["Country"] for item in stocks_data)))
+
+    # Pre-populate major global markets so they are always visible in the dropdown
+    default_countries = ["All", "US / Global", "India", "Sweden", "Germany", "France", "United Kingdom"]
+    fetched_countries = list(set(item["Country"] for item in stocks_data))
+    countries = sorted(list(set(default_countries + fetched_countries)))
+
     sel_country = st.sidebar.selectbox("Country / Market", countries)
 
     exchanges = ["All"] + sorted(list(set(item["Exchange"] for item in stocks_data)))
