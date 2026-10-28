@@ -14,10 +14,10 @@ all_tickers = load_ticker_universe()
 st.sidebar.header("⚙️ Performance Control")
 max_stocks = st.sidebar.slider(
     "Max Stocks to Scan Live",
-    min_value=20,
-    max_value=min(2000, len(all_tickers)),
-    value=100,
-    step=20,
+    min_value=50,
+    max_value=min(3000, len(all_tickers)),
+    value=500,  # Increased default scan depth to capture all global markets
+    step=50,
     help="Select how many global stocks to load live into the screener."
 )
 

@@ -1,6 +1,7 @@
 import csv
 import os
 
+
 def load_ticker_universe():
     tickers = []
     if os.path.exists("tickers.csv"):
@@ -9,9 +10,24 @@ def load_ticker_universe():
             for row in reader:
                 if "ticker" in row:
                     tickers.append(row["ticker"])
-    else:
-        tickers = ["AAPL", "MSFT", "RELIANCE.NS", "VOLV-B.ST", "SAP.DE"]
-    return tickers
+
+    if not tickers:
+        tickers = ["AAPL", "MSFT", "RELIANCE.NS", "VOLV-B.ST", "SAP.DE", "ASML.AS", "SHEL.L", "TTE.PA"]
+
+    # Ensure a diverse sample from different regions is prioritized if a large list exists
+    us_stocks = [t for t in tickers if "." not in t]
+    global_stocks = [t for t in tickers if "." in t]
+
+    # Interleave global exchanges with US stocks so slider limits capture multi-market stocks instantly
+    interleaved = []
+    max_len = max(len(us_stocks), len(global_stocks))
+    for i in range(max_len):
+        if i < len(us_stocks):
+            interleaved.append(us_stocks[i])
+        if i < len(global_stocks):
+            interleaved.append(global_stocks[i])
+
+    return interleaved
 
 def fetch_stock_data(tickers_to_scan):
     data_list = []
