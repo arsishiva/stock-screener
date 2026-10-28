@@ -40,4 +40,8 @@ else:
     filtered_results = render_sidebar_filters(stocks_data)
 
     st.write(f"### Matching Results ({len(filtered_results)} stocks displayed)")
-    st.dataframe(filtered_results, use_container_width=True)
+    if filtered_results:
+        # st.table works directly with pure Python list of dicts (no pandas dependency)
+        st.table(filtered_results)
+    else:
+        st.warning("No stocks matched the selected filter criteria. Try setting Country and Exchange to 'All'.")

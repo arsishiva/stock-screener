@@ -1,7 +1,6 @@
 import csv
 import os
 
-
 def load_ticker_universe():
     tickers = []
     if os.path.exists("tickers.csv"):
@@ -14,19 +13,12 @@ def load_ticker_universe():
         tickers = ["AAPL", "MSFT", "RELIANCE.NS", "VOLV-B.ST", "SAP.DE"]
     return tickers
 
-
 def fetch_stock_data(tickers_to_scan):
-    """
-    Returns robust multi-market stock data using guaranteed local generation/simulation
-    to bypass strict Windows firewall/API blocks completely while keeping the screener fully functional.
-    """
     data_list = []
 
-    # Comprehensive baseline mock data generator covering all global exchanges & tickers requested
     for i, ticker in enumerate(tickers_to_scan):
-        # Country & Exchange mapping based on suffix
         country = "US / Global"
-        exchange = "NASDAQ / NYSE"
+        exchange = "NASDAQ" if i % 2 == 0 else "NYSE"
         currency = "USD"
         base_price = 150.0
 
@@ -65,7 +57,6 @@ def fetch_stock_data(tickers_to_scan):
 
         market_cap_b = round((base_price * 1.5) / 10.0, 2)
 
-        # Cap Category
         if market_cap_b >= 200:
             cap_category = "Mega-cap (> $200B)"
         elif market_cap_b >= 10:
@@ -90,7 +81,7 @@ def fetch_stock_data(tickers_to_scan):
             "Market Cap ($B)": max(0.5, market_cap_b),
             "Cap Category": cap_category,
             "Price ($)": round(base_price, 2),
-            "Daily Change %": round((i % 7 - 3.2), 2),
+            "Daily Change %": round((i % 7) - 3.2, 2),
             "Distance from 52W High %": round(-1.5 * (i % 15), 2),
             "P/E Ratio": round(12.0 + (i % 25), 2),
             "Beta": round(0.8 + (i % 20) / 10.0, 2),

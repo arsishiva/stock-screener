@@ -1,6 +1,5 @@
 import streamlit as st
 
-
 def render_sidebar_filters(stocks_data):
     st.sidebar.header("🔍 Screener Filter Library")
 
@@ -22,7 +21,6 @@ def render_sidebar_filters(stocks_data):
         "Energy", "Utilities", "Basic Materials", "Real Estate", "Communication Services"
     ]
 
-    # Dynamically merge master lists with any incoming fetched data values
     fetched_countries = list(set(item["Country"] for item in stocks_data)) if stocks_data else []
     fetched_exchanges = list(set(item["Exchange"] for item in stocks_data)) if stocks_data else []
     fetched_sectors = list(set(item["Sector"] for item in stocks_data)) if stocks_data else []
@@ -64,40 +62,34 @@ def render_sidebar_filters(stocks_data):
     # --- Apply Filtering Logic ---
     filtered = stocks_data if stocks_data else []
 
-    # 1. Country / Market Filter
+    # 1. Country Filter (Direct field comparison or ticker suffix fallback)
     if sel_country != "All":
-        if sel_country == "India":
-            filtered = [i for i in filtered if ".NS" in i.get("Ticker", "")]
-        elif sel_country == "Sweden":
-            filtered = [i for i in filtered if ".ST" in i.get("Ticker", "")]
-        elif sel_country == "Germany":
-            filtered = [i for i in filtered if ".DE" in i.get("Ticker", "")]
-        elif sel_country == "Netherlands":
-            filtered = [i for i in filtered if ".AS" in i.get("Ticker", "")]
-        elif sel_country == "United Kingdom":
-            filtered = [i for i in filtered if ".L" in i.get("Ticker", "")]
-        elif sel_country == "France":
-            filtered = [i for i in filtered if ".PA" in i.get("Ticker", "")]
-        elif sel_country == "US / Global":
-            filtered = [i for i in filtered if "." not in i.get("Ticker", "")]
+        filtered = [
+            i for i in filtered
+            if i.get("Country") == sel_country or (
+                (sel_country == "India" and ".NS" in i.get("Ticker", "")) or
+                (sel_country == "Sweden" and ".ST" in i.get("Ticker", "")) or
+                (sel_country == "Germany" and ".DE" in i.get("Ticker", "")) or
+                (sel_country == "Netherlands" and ".AS" in i.get("Ticker", "")) or
+                (sel_country == "United Kingdom" and ".L" in i.get("Ticker", "")) or
+                (sel_country == "France" and ".PA" in i.get("Ticker", "")) or
+                (sel_country == "US / Global" and "." not in i.get("Ticker", ""))
+            )
+        ]
 
-    # 2. Exchange Filter
+    # 2. Exchange Filter (Flexible substring match)
     if sel_exchange != "All":
-        ex_map = {
-            "NSE India": ".NS",
-            "OMX Sweden": ".ST",
-            "Xetra Germany": ".DE",
-            "Euronext Amsterdam": ".AS",
-            "London Stock Exchange": ".L",
-            "Euronext Paris": ".PA",
-            "NASDAQ": "",
-            "NYSE": ""
-        }
-        suffix = ex_map.get(sel_exchange, "")
-        if suffix:
-            filtered = [i for i in filtered if suffix in i.get("Ticker", "")]
-        else:
-            filtered = [i for i in filtered if i.get("Exchange") == sel_exchange]
+        filtered = [
+            i for i in filtered
+            if sel_exchange.lower() in i.get("Exchange", "").lower() or (
+                (sel_exchange == "NSE India" and ".NS" in i.get("Ticker", "")) or
+                (sel_exchange == "OMX Sweden" and ".ST" in i.get("Ticker", "")) or
+                (sel_exchange == "Xetra Germany" and ".DE" in i.get("Ticker", "")) or
+                (sel_exchange == "Euronext Amsterdam" and ".AS" in i.get("Ticker", "")) or
+                (sel_exchange == "London Stock Exchange" and ".L" in i.get("Ticker", "")) or
+                (sel_exchange == "Euronext Paris" and ".PA" in i.get("Ticker", ""))
+            )
+        ]
 
     if sel_sector != "All":
         filtered = [i for i in filtered if i.get("Sector") == sel_sector]
