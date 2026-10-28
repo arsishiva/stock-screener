@@ -63,10 +63,42 @@ def render_sidebar_filters(stocks_data):
 
     # --- Apply Filtering Logic ---
     filtered = stocks_data if stocks_data else []
+
+    # 1. Country / Market Filter
     if sel_country != "All":
-        filtered = [i for i in filtered if i.get("Country") == sel_country]
+        if sel_country == "India":
+            filtered = [i for i in filtered if ".NS" in i.get("Ticker", "")]
+        elif sel_country == "Sweden":
+            filtered = [i for i in filtered if ".ST" in i.get("Ticker", "")]
+        elif sel_country == "Germany":
+            filtered = [i for i in filtered if ".DE" in i.get("Ticker", "")]
+        elif sel_country == "Netherlands":
+            filtered = [i for i in filtered if ".AS" in i.get("Ticker", "")]
+        elif sel_country == "United Kingdom":
+            filtered = [i for i in filtered if ".L" in i.get("Ticker", "")]
+        elif sel_country == "France":
+            filtered = [i for i in filtered if ".PA" in i.get("Ticker", "")]
+        elif sel_country == "US / Global":
+            filtered = [i for i in filtered if "." not in i.get("Ticker", "")]
+
+    # 2. Exchange Filter
     if sel_exchange != "All":
-        filtered = [i for i in filtered if sel_exchange.lower() in i.get("Exchange", "").lower()]
+        ex_map = {
+            "NSE India": ".NS",
+            "OMX Sweden": ".ST",
+            "Xetra Germany": ".DE",
+            "Euronext Amsterdam": ".AS",
+            "London Stock Exchange": ".L",
+            "Euronext Paris": ".PA",
+            "NASDAQ": "",
+            "NYSE": ""
+        }
+        suffix = ex_map.get(sel_exchange, "")
+        if suffix:
+            filtered = [i for i in filtered if suffix in i.get("Ticker", "")]
+        else:
+            filtered = [i for i in filtered if i.get("Exchange") == sel_exchange]
+
     if sel_sector != "All":
         filtered = [i for i in filtered if i.get("Sector") == sel_sector]
     if sel_industry != "All":
