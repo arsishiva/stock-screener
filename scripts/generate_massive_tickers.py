@@ -1,6 +1,9 @@
 import pandas as pd
 import requests
 import io
+from pathlib import Path
+
+TICKER_FILE = Path(__file__).resolve().parents[1] / "data" / "tickers.csv"
 
 print("Downloading massive global stock lists from free public sources...")
 
@@ -49,8 +52,9 @@ eu_tickers = [
 for t in eu_tickers:
     all_stocks.append({"ticker": t, "exchange": "Europe"})
 
-# Save everything into tickers.csv
+# Save the generated universe into the project's data directory.
 df_final = pd.DataFrame(all_stocks).drop_duplicates(subset=["ticker"])
-df_final.to_csv("tickers.csv", index=False)
+TICKER_FILE.parent.mkdir(parents=True, exist_ok=True)
+df_final.to_csv(TICKER_FILE, index=False)
 
-print(f"\nSUCCESS! Created 'tickers.csv' with {len(df_final)} total global stocks ready for screening!")
+print(f"\nSUCCESS! Created '{TICKER_FILE}' with {len(df_final)} total global stocks ready for screening!")

@@ -1,4 +1,7 @@
+"""Legacy filters for the original synthetic-data screener."""
+
 import streamlit as st
+
 
 def render_sidebar_filters(stocks_data):
     st.sidebar.header("🔍 Screener Filter Library")
@@ -48,13 +51,23 @@ def render_sidebar_filters(stocks_data):
     # --- B. Price & Trading Activity ---
     st.sidebar.subheader("B. Price & Trading Activity")
     sel_min_marketcap = st.sidebar.slider("Min Market Cap ($B)", min_value=0.0, max_value=2000.0, value=0.0)
-    sel_max_pe = st.sidebar.slider("Maximum P/E Ratio", min_value=5.0, max_value=100.0, value=100.0)
     sel_min_daily_change = st.sidebar.slider("Min Daily Change (%)", min_value=-50.0, max_value=50.0, value=-50.0)
     max_dist_high = st.sidebar.slider("Max Distance from 52W High (%)", min_value=-100.0, max_value=0.0, value=-100.0)
     sel_max_beta = st.sidebar.slider("Max Beta (Volatility Sensitivity)", min_value=0.2, max_value=5.0, value=5.0)
 
-    # --- C. Technical Filters ---
-    st.sidebar.subheader("C. Technical Filters")
+    # --- C. Valuation Filters ---
+    st.sidebar.subheader("C. Valuation Filters")
+    sel_max_pe = st.sidebar.slider("Max P/E Ratio", min_value=1.0, max_value=100.0, value=100.0)
+    sel_max_fwd_pe = st.sidebar.slider("Max Forward P/E", min_value=1.0, max_value=100.0, value=100.0)
+    sel_max_peg = st.sidebar.slider("Max PEG Ratio", min_value=0.1, max_value=5.0, value=5.0)
+    sel_max_ps = st.sidebar.slider("Max Price-to-Sales (P/S)", min_value=0.1, max_value=30.0, value=30.0)
+    sel_max_pb = st.sidebar.slider("Max Price-to-Book (P/B)", min_value=0.1, max_value=20.0, value=20.0)
+    sel_max_ev_ebitda = st.sidebar.slider("Max EV / EBITDA", min_value=1.0, max_value=50.0, value=50.0)
+    sel_min_earnings_yield = st.sidebar.slider("Min Earnings Yield (%)", min_value=0.0, max_value=25.0, value=0.0)
+    sel_min_fcf_yield = st.sidebar.slider("Min FCF Yield (%)", min_value=0.0, max_value=25.0, value=0.0)
+
+    # --- D. Technical Filters ---
+    st.sidebar.subheader("D. Technical Filters")
     rsi_filter = st.sidebar.selectbox("RSI (14) Status",
                                       ["Any", "Oversold (< 30)", "Neutral (30-70)", "Overbought (> 70)"])
     sma_filter = st.sidebar.selectbox("Price vs 200 SMA", ["Any", "Above", "Below"])
@@ -62,32 +75,32 @@ def render_sidebar_filters(stocks_data):
     # --- Apply Filtering Logic ---
     filtered = stocks_data if stocks_data else []
 
-    # 1. Country Filter (Direct field comparison or ticker suffix fallback)
+    # 1. Country Filter
     if sel_country != "All":
         filtered = [
             i for i in filtered
             if i.get("Country") == sel_country or (
-                (sel_country == "India" and ".NS" in i.get("Ticker", "")) or
-                (sel_country == "Sweden" and ".ST" in i.get("Ticker", "")) or
-                (sel_country == "Germany" and ".DE" in i.get("Ticker", "")) or
-                (sel_country == "Netherlands" and ".AS" in i.get("Ticker", "")) or
-                (sel_country == "United Kingdom" and ".L" in i.get("Ticker", "")) or
-                (sel_country == "France" and ".PA" in i.get("Ticker", "")) or
-                (sel_country == "US / Global" and "." not in i.get("Ticker", ""))
+                    (sel_country == "India" and ".NS" in i.get("Ticker", "")) or
+                    (sel_country == "Sweden" and ".ST" in i.get("Ticker", "")) or
+                    (sel_country == "Germany" and ".DE" in i.get("Ticker", "")) or
+                    (sel_country == "Netherlands" and ".AS" in i.get("Ticker", "")) or
+                    (sel_country == "United Kingdom" and ".L" in i.get("Ticker", "")) or
+                    (sel_country == "France" and ".PA" in i.get("Ticker", "")) or
+                    (sel_country == "US / Global" and "." not in i.get("Ticker", ""))
             )
         ]
 
-    # 2. Exchange Filter (Flexible substring match)
+    # 2. Exchange Filter
     if sel_exchange != "All":
         filtered = [
             i for i in filtered
             if sel_exchange.lower() in i.get("Exchange", "").lower() or (
-                (sel_exchange == "NSE India" and ".NS" in i.get("Ticker", "")) or
-                (sel_exchange == "OMX Sweden" and ".ST" in i.get("Ticker", "")) or
-                (sel_exchange == "Xetra Germany" and ".DE" in i.get("Ticker", "")) or
-                (sel_exchange == "Euronext Amsterdam" and ".AS" in i.get("Ticker", "")) or
-                (sel_exchange == "London Stock Exchange" and ".L" in i.get("Ticker", "")) or
-                (sel_exchange == "Euronext Paris" and ".PA" in i.get("Ticker", ""))
+                    (sel_exchange == "NSE India" and ".NS" in i.get("Ticker", "")) or
+                    (sel_exchange == "OMX Sweden" and ".ST" in i.get("Ticker", "")) or
+                    (sel_exchange == "Xetra Germany" and ".DE" in i.get("Ticker", "")) or
+                    (sel_exchange == "Euronext Amsterdam" and ".AS" in i.get("Ticker", "")) or
+                    (sel_exchange == "London Stock Exchange" and ".L" in i.get("Ticker", "")) or
+                    (sel_exchange == "Euronext Paris" and ".PA" in i.get("Ticker", ""))
             )
         ]
 
@@ -100,13 +113,23 @@ def render_sidebar_filters(stocks_data):
     if sel_currency != "All":
         filtered = [i for i in filtered if i.get("Currency") == sel_currency]
 
+    # B. Price & Activity Filters
     filtered = [i for i in filtered if i.get("Market Cap ($B)", 0) >= sel_min_marketcap]
-    if sel_max_pe < 100:
-        filtered = [i for i in filtered if 0 < i.get("P/E Ratio", 0) <= sel_max_pe]
     filtered = [i for i in filtered if i.get("Daily Change %", 0) >= sel_min_daily_change]
     filtered = [i for i in filtered if i.get("Distance from 52W High %", 0) >= max_dist_high]
     filtered = [i for i in filtered if i.get("Beta", 1.0) <= sel_max_beta]
 
+    # C. Valuation Filters
+    filtered = [i for i in filtered if i.get("P/E Ratio", 0) <= sel_max_pe]
+    filtered = [i for i in filtered if i.get("Forward P/E", 0) <= sel_max_fwd_pe]
+    filtered = [i for i in filtered if i.get("PEG Ratio", 0) <= sel_max_peg]
+    filtered = [i for i in filtered if i.get("P/S", 0) <= sel_max_ps]
+    filtered = [i for i in filtered if i.get("P/B", 0) <= sel_max_pb]
+    filtered = [i for i in filtered if i.get("EV/EBITDA", 0) <= sel_max_ev_ebitda]
+    filtered = [i for i in filtered if i.get("Earnings Yield (%)", 0) >= sel_min_earnings_yield]
+    filtered = [i for i in filtered if i.get("FCF Yield (%)", 0) >= sel_min_fcf_yield]
+
+    # D. Technical Filters
     if rsi_filter == "Oversold (< 30)":
         filtered = [i for i in filtered if i.get("RSI (14)", 50) < 30]
     elif rsi_filter == "Neutral (30-70)":

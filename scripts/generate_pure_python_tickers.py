@@ -1,5 +1,8 @@
 import urllib.request
 import csv
+from pathlib import Path
+
+TICKER_FILE = Path(__file__).resolve().parents[1] / "data" / "tickers.csv"
 
 print("Downloading and compiling expanded global stock lists...")
 
@@ -101,10 +104,11 @@ for s in france_stocks:
 
 print(f"\nSUCCESS! Generated {len(all_stocks)} total unique tickers across US, India, UK, Sweden, Germany, Netherlands, and France.")
 
-# Save directly to tickers.csv using pure Python
-with open("tickers.csv", "w", newline="", encoding="utf-8") as f:
+# Save the generated universe into the project's data directory.
+TICKER_FILE.parent.mkdir(parents=True, exist_ok=True)
+with TICKER_FILE.open("w", newline="", encoding="utf-8") as f:
     writer = csv.DictWriter(f, fieldnames=["ticker", "exchange"])
     writer.writeheader()
     writer.writerows(all_stocks)
 
-print("Saved cleanly to 'tickers.csv'!")
+print(f"Saved cleanly to '{TICKER_FILE}'!")
