@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
 from datetime import datetime, timezone
 from typing import Any
@@ -60,11 +61,25 @@ def fetch_stock_data(ticker: str) -> dict[str, Any]:
             statements[key] = pd.DataFrame()
             warnings.append(f"Annual {key} statement unavailable: {exc}")
 
+    quarterly_statements: dict[str, pd.DataFrame] = {}
+    for key, attribute in (
+        ("income", "quarterly_income_stmt"),
+        ("balance", "quarterly_balance_sheet"),
+        ("cashflow", "quarterly_cash_flow"),
+    ):
+        try:
+            quarterly_statements[key] = getattr(stock, attribute)
+        except Exception as exc:
+            LOGGER.warning("%s quarterly statement unavailable for %s: %s", key, symbol, exc)
+            quarterly_statements[key] = pd.DataFrame()
+            warnings.append(f"Quarterly {key} statement unavailable: {exc}")
+
     return {
         "ticker": symbol,
         "info": info or {},
         "history": history,
         "statements": statements,
+        "quarterly_statements": quarterly_statements,
         "retrieved_at": datetime.now(timezone.utc),
         "warnings": warnings,
     }
@@ -101,7 +116,16 @@ def _statement_value(statement: pd.DataFrame, *aliases: str) -> float | None:
 
 def financial_history(data: dict[str, Any]) -> list[dict[str, Any]]:
     """Build annual financial rows from reported statements without filling gaps."""
-    statements = data["statements"]
+    return _financial_history(data.get("statements", {}))
+
+
+def quarterly_financial_history(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Build quarterly financial rows from reported quarterly statements."""
+    return _financial_history(data.get("quarterly_statements", {}))
+
+
+def _financial_history(statements: dict[str, pd.DataFrame]) -> list[dict[str, Any]]:
+    """Build financial rows at the reporting frequency supplied."""
     income = statements.get("income", pd.DataFrame())
     cashflow = statements.get("cashflow", pd.DataFrame())
     balance = statements.get("balance", pd.DataFrame())
@@ -127,6 +151,9 @@ def financial_history(data: dict[str, Any]) -> list[dict[str, Any]]:
         revenue = _statement_value(annual["income"], "Total Revenue", "Operating Revenue")
         gross_profit = _statement_value(annual["income"], "Gross Profit")
         operating_income = _statement_value(annual["income"], "Operating Income")
+        operating_expenses = _statement_value(
+            annual["income"], "Operating Expense", "Operating Expenses"
+        )
         net_income = _statement_value(annual["income"], "Net Income", "Net Income Common Stockholders")
         eps = _statement_value(annual["income"], "Diluted EPS", "Basic EPS")
         operating_cash_flow = _statement_value(
@@ -155,6 +182,19 @@ def financial_history(data: dict[str, Any]) -> list[dict[str, Any]]:
         )
         current_assets = _statement_value(annual["balance"], "Current Assets")
         current_liabilities = _statement_value(annual["balance"], "Current Liabilities")
+        diluted_shares = _statement_value(
+            annual["income"], "Diluted Average Shares", "Diluted Shares"
+        )
+        minority_interest = _statement_value(
+            annual["balance"], "Minority Interest", "Minority Interests", "Noncontrolling Interest"
+        )
+        interest_expense = _statement_value(
+            annual["income"], "Interest Expense", "Interest Expense Non Operating"
+        )
+        pretax_income = _statement_value(
+            annual["income"], "Pretax Income", "Income Before Tax"
+        )
+        tax_provision = _statement_value(annual["income"], "Tax Provision", "Income Tax Expense")
 
         rows.append({
             "Period": period_end.strftime("%Y-%m-%d"),
@@ -164,7 +204,9 @@ def financial_history(data: dict[str, Any]) -> list[dict[str, Any]]:
             "Gross profit": gross_profit,
             "Gross margin": gross_profit / revenue if gross_profit is not None and revenue else None,
             "Operating income": operating_income,
+            "Operating expenses": operating_expenses,
             "Operating margin": operating_income / revenue if operating_income is not None and revenue else None,
+            "Operating income": operating_income,
             "EBITDA": ebitda,
             "EBITDA margin": ebitda / revenue if ebitda is not None and revenue else None,
             "Net income": net_income,
@@ -177,6 +219,12 @@ def financial_history(data: dict[str, Any]) -> list[dict[str, Any]]:
             "Total debt": total_debt,
             "Current assets": current_assets,
             "Current liabilities": current_liabilities,
+            "Diluted shares": diluted_shares,
+            "Minority interest": minority_interest,
+            "Interest expense": interest_expense,
+            "Depreciation and amortization": depreciation,
+            "Pretax income": pretax_income,
+            "Tax provision": tax_provision,
         })
 
     rows.sort(key=lambda row: row["Period"])
@@ -280,24 +328,464 @@ def discounted_cash_flow(
     terminal_growth: float,
     years: int = 5,
 ) -> float | None:
-    """Estimate per-share equity value using a simple, editable FCF DCF."""
+    """Compatibility wrapper for an FCF-growth DCF returning value per share."""
+    growth_rates = [annual_growth] * years
+    result = calculate_dcf(
+        free_cash_flow,
+        shares,
+        cash,
+        debt,
+        None,
+        growth_rates,
+        discount_rate,
+        terminal_growth,
+    )
+    return result["fair_value_per_share"] if result else None
+
+
+def calculate_dcf(
+    starting_fcf: float | None,
+    diluted_shares: float | None,
+    cash: float | None,
+    debt: float | None,
+    minority_interest: float | None,
+    annual_growth_rates: list[float],
+    discount_rate: float,
+    terminal_growth: float,
+    *,
+    annual_revenue_growth_rates: list[float] | None = None,
+    revenue: float | None = None,
+    base_operating_margin: float | None = None,
+    forecast_operating_margin: float | None = None,
+    tax_rate: float | None = None,
+    base_capex_margin: float | None = None,
+    forecast_capex_margin: float | None = None,
+) -> dict[str, Any] | None:
+    """Discount annual FCF forecasts and reconcile enterprise to equity value.
+
+    FCF growth is the forecast baseline. When reported revenue, operating margin,
+    capex ratio, and user-entered margin/capex assumptions exist, changes in those
+    assumptions are translated into an explicit after-tax operating-profit and
+    capex adjustment to each forecast year.
+    """
     if (
-        free_cash_flow is None or free_cash_flow <= 0
-        or shares is None or shares <= 0 or cash is None or debt is None
-        or discount_rate <= terminal_growth or terminal_growth < -1
+        starting_fcf is None or starting_fcf <= 0
+        or diluted_shares is None or diluted_shares <= 0
+        or cash is None or debt is None
+        or not annual_growth_rates
+        or not 0 <= terminal_growth < discount_rate
+        or not all(math.isfinite(value) for value in (starting_fcf, diluted_shares, cash, debt, discount_rate, terminal_growth))
+        or any(not math.isfinite(rate) or rate <= -1 for rate in annual_growth_rates)
+        or any(
+            value is not None and not math.isfinite(value)
+            for value in (
+                minority_interest, revenue, base_operating_margin,
+                forecast_operating_margin, tax_rate, base_capex_margin,
+                forecast_capex_margin,
+            )
+        )
+        or (
+            annual_revenue_growth_rates is not None
+            and (
+                len(annual_revenue_growth_rates) != len(annual_growth_rates)
+                or any(
+                    not math.isfinite(rate) or rate <= -1
+                    for rate in annual_revenue_growth_rates
+                )
+            )
+        )
     ):
         return None
 
-    present_value = 0.0
-    projected_fcf = free_cash_flow
-    for year in range(1, years + 1):
-        projected_fcf *= 1 + annual_growth
-        present_value += projected_fcf / (1 + discount_rate) ** year
+    forecast = []
+    present_values = []
+    fcf = starting_fcf
+    forecast_revenue = revenue
+    revenue_growth_rates = annual_revenue_growth_rates or annual_growth_rates
+    for year, (growth_rate, revenue_growth_rate) in enumerate(
+        zip(annual_growth_rates, revenue_growth_rates), start=1
+    ):
+        fcf *= 1 + growth_rate
+        if forecast_revenue is not None:
+            forecast_revenue *= 1 + revenue_growth_rate
+        if (
+            forecast_revenue is not None
+            and base_operating_margin is not None
+            and forecast_operating_margin is not None
+            and tax_rate is not None
+        ):
+            fcf += (
+                forecast_revenue
+                * (forecast_operating_margin - base_operating_margin)
+                * (1 - tax_rate)
+            )
+        if (
+            forecast_revenue is not None
+            and base_capex_margin is not None
+            and forecast_capex_margin is not None
+        ):
+            fcf -= forecast_revenue * (forecast_capex_margin - base_capex_margin)
 
-    terminal_value = projected_fcf * (1 + terminal_growth) / (discount_rate - terminal_growth)
-    present_value += terminal_value / (1 + discount_rate) ** years
-    equity_value = present_value + cash - debt
-    return equity_value / shares
+        present_value = fcf / (1 + discount_rate) ** year
+        forecast.append({
+            "Year": year,
+            "Growth rate": growth_rate,
+            "Revenue growth rate": revenue_growth_rate,
+            "Forecast FCF": fcf,
+            "Present value": present_value,
+        })
+        present_values.append(present_value)
+
+    terminal_value = fcf * (1 + terminal_growth) / (discount_rate - terminal_growth)
+    terminal_present_value = terminal_value / (1 + discount_rate) ** len(annual_growth_rates)
+    enterprise_value = sum(present_values) + terminal_present_value
+    equity_value = enterprise_value + cash - debt
+    minority_interest_applied = minority_interest is not None
+    if minority_interest_applied:
+        equity_value -= minority_interest
+
+    return {
+        "forecast": forecast,
+        "terminal_value": terminal_value,
+        "terminal_present_value": terminal_present_value,
+        "present_value_of_forecast": sum(present_values),
+        "enterprise_value": enterprise_value,
+        "cash": cash,
+        "debt": debt,
+        "minority_interest": minority_interest,
+        "minority_interest_applied": minority_interest_applied,
+        "equity_value": equity_value,
+        "diluted_shares": diluted_shares,
+        "fair_value_per_share": equity_value / diluted_shares,
+        "terminal_value_share": (
+            terminal_present_value / enterprise_value if enterprise_value > 0 else None
+        ),
+    }
+
+
+def calculate_forecast_dcf(
+    forecast: list[dict[str, Any]],
+    current_diluted_shares: float | None,
+    cash: float | None,
+    debt: float | None,
+    minority_interest: float | None,
+    discount_rate: float,
+    terminal_growth: float,
+) -> dict[str, Any] | None:
+    """Value explicitly forecast operating cash flow less capex, not a grown FCF proxy."""
+    if (
+        not forecast
+        or current_diluted_shares is None or current_diluted_shares <= 0
+        or cash is None or debt is None
+        or not math.isfinite(discount_rate)
+        or not 0 <= terminal_growth < discount_rate
+    ):
+        return None
+
+    projected: list[dict[str, Any]] = []
+    present_values: list[float] = []
+    for year, row in enumerate(forecast, start=1):
+        operating_cash_flow = row.get("Operating cash flow")
+        capital_expenditure = row.get("Capital expenditure")
+        if (
+            operating_cash_flow is None or capital_expenditure is None
+            or not math.isfinite(operating_cash_flow)
+            or not math.isfinite(capital_expenditure)
+        ):
+            return None
+        free_cash_flow = operating_cash_flow - abs(capital_expenditure)
+        present_value = free_cash_flow / (1 + discount_rate) ** year
+        projected_row = {
+            **row,
+            "Forecast year": year,
+            "Free cash flow": free_cash_flow,
+            "Present value of FCF": present_value,
+        }
+        projected.append(projected_row)
+        present_values.append(present_value)
+
+    terminal_fcf = projected[-1]["Free cash flow"]
+    if terminal_fcf <= 0:
+        return None
+    terminal_value = terminal_fcf * (1 + terminal_growth) / (discount_rate - terminal_growth)
+    terminal_present_value = terminal_value / (1 + discount_rate) ** len(projected)
+    enterprise_value = sum(present_values) + terminal_present_value
+    equity_value = enterprise_value + cash - debt
+    minority_interest_applied = minority_interest is not None
+    if minority_interest_applied:
+        equity_value -= minority_interest
+
+    return {
+        "forecast": projected,
+        "terminal_value": terminal_value,
+        "terminal_present_value": terminal_present_value,
+        "present_value_of_forecast": sum(present_values),
+        "enterprise_value": enterprise_value,
+        "cash": cash,
+        "debt": debt,
+        "minority_interest": minority_interest,
+        "minority_interest_applied": minority_interest_applied,
+        "equity_value": equity_value,
+        "diluted_shares": current_diluted_shares,
+        "fair_value_per_share": equity_value / current_diluted_shares,
+        "terminal_value_share": (
+            terminal_present_value / enterprise_value if enterprise_value > 0 else None
+        ),
+    }
+
+
+def historical_fcf_summary(annual: list[dict[str, Any]]) -> dict[str, Any]:
+    """Summarize reported FCF and calculated EBITDA margins without filling gaps."""
+    fcf_rows = [row for row in annual if row.get("Free cash flow") is not None]
+    fcf_values = [row["Free cash flow"] for row in fcf_rows]
+    positive_fcf = [value for value in fcf_values if value > 0]
+    normalization_rows = [
+        row for row in annual
+        if row.get("Revenue") is not None and row["Revenue"] > 0
+        and row.get("Operating cash flow") is not None
+        and row.get("Capital expenditure") is not None
+    ]
+    historical_revenues = [row["Revenue"] for row in normalization_rows]
+    operating_cash_flow_margins = [
+        row["Operating cash flow"] / row["Revenue"] for row in normalization_rows
+    ]
+    capex_margins = [
+        abs(row["Capital expenditure"]) / row["Revenue"] for row in normalization_rows
+    ]
+    normalized_fcf = None
+    if len(normalization_rows) >= 3:
+        normalized_fcf = float(pd.Series(historical_revenues).median()) * (
+            float(pd.Series(operating_cash_flow_margins).median())
+            - float(pd.Series(capex_margins).median())
+        )
+    reported_fcf_median = (
+        float(pd.Series(fcf_values).median()) if len(fcf_values) >= 3 else None
+    )
+    fcf_mean = float(pd.Series(fcf_values).mean()) if fcf_values else None
+    fcf_std = float(pd.Series(fcf_values).std(ddof=0)) if len(fcf_values) > 1 else None
+    fcf_cv = fcf_std / abs(fcf_mean) if fcf_std is not None and fcf_mean else None
+    fcf_margins = [
+        row["Free cash flow"] / row["Revenue"]
+        for row in fcf_rows if row.get("Revenue")
+    ]
+    ebitda_margin_rows = [
+        row for row in annual
+        if row.get("EBITDA margin") is not None
+    ]
+    ebitda_margins = [row["EBITDA margin"] for row in ebitda_margin_rows]
+    margin_mean = float(pd.Series(ebitda_margins).mean()) if ebitda_margins else None
+    margin_std = float(pd.Series(ebitda_margins).std(ddof=0)) if len(ebitda_margins) > 1 else None
+    sign_changes = sum(
+        1 for previous, current in zip(fcf_values, fcf_values[1:])
+        if previous * current < 0
+    )
+
+    peak_year = None
+    trough_year = None
+    if fcf_rows:
+        peak_year = max(fcf_rows, key=lambda row: row["Free cash flow"])["Fiscal year"]
+        trough_year = min(fcf_rows, key=lambda row: row["Free cash flow"])["Fiscal year"]
+
+    return {
+        "fcf_values": fcf_values,
+        "fcf_periods": [row["Fiscal year"] for row in fcf_rows],
+        "fcf_count": len(fcf_values),
+        "positive_fcf_count": len(positive_fcf),
+        "normalized_fcf": normalized_fcf,
+        "normalization_period_count": len(normalization_rows),
+        "normalization_method": (
+            "Median reported revenue × (median operating-cash-flow margin − median capex/revenue)"
+            if normalized_fcf is not None else None
+        ),
+        "median_historical_revenue": (
+            float(pd.Series(historical_revenues).median()) if historical_revenues else None
+        ),
+        "median_operating_cash_flow_margin": (
+            float(pd.Series(operating_cash_flow_margins).median())
+            if operating_cash_flow_margins else None
+        ),
+        "median_capex_margin": (
+            float(pd.Series(capex_margins).median()) if capex_margins else None
+        ),
+        "reported_fcf_median": reported_fcf_median,
+        "operating_cash_flow_values": [
+            row["Operating cash flow"] for row in normalization_rows
+        ],
+        "capex_values": [
+            abs(row["Capital expenditure"]) for row in normalization_rows
+        ],
+        "normalization_periods": [
+            row["Fiscal year"] for row in normalization_rows
+        ],
+        "fcf_mean": fcf_mean,
+        "fcf_std": fcf_std,
+        "fcf_cv": fcf_cv,
+        "fcf_margins": fcf_margins,
+        "median_fcf_margin": float(pd.Series(fcf_margins).median()) if fcf_margins else None,
+        "ebitda_margins": ebitda_margins,
+        "ebitda_margin_periods": [
+            row["Fiscal year"] for row in ebitda_margin_rows
+        ],
+        "median_ebitda_margin": float(pd.Series(ebitda_margins).median()) if ebitda_margins else None,
+        "ebitda_margin_std": margin_std,
+        "ebitda_margin_mean": margin_mean,
+        "fcf_sign_changes": sign_changes,
+        "peak_year": peak_year,
+        "trough_year": trough_year,
+        "has_five_year_history": len(fcf_values) >= 5,
+    }
+
+
+def dcf_confidence(
+    historical: dict[str, Any],
+    sensitivity_values: list[float | None],
+    base_value: float | None,
+    normalized_value: float | None,
+    cyclical: bool,
+    completeness: float,
+    terminal_value_share: float | None,
+    guidance_accuracy: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Score model reliability separately from expected return."""
+    fcf_cv = historical.get("fcf_cv")
+    stability = (
+        max(0.0, min(100.0, 100 / (1 + fcf_cv)))
+        if fcf_cv is not None else 35.0 if historical.get("fcf_count", 0) > 0 else 0.0
+    )
+    sensitivity_values = [value for value in sensitivity_values if value is not None]
+    if base_value and base_value > 0 and sensitivity_values:
+        sensitivity_spread = (max(sensitivity_values) - min(sensitivity_values)) / base_value
+        sensitivity_score = max(0.0, min(100.0, 100 - sensitivity_spread * 100))
+    else:
+        sensitivity_score = 0.0
+
+    history_count = historical.get("normalization_period_count", 0)
+    normalization_score = (
+        min(100.0, history_count * 20)
+        if normalized_value is not None else 0.0
+    )
+    cyclicality_score = 35.0 if cyclical else 80.0
+    terminal_dependence_score = (
+        max(0.0, min(100.0, 100 - terminal_value_share * 100))
+        if terminal_value_share is not None else 35.0
+    )
+    accuracy_count = guidance_accuracy.get("count", 0) if guidance_accuracy else 0
+    absolute_guidance_variance = (
+        abs(guidance_accuracy["mean_midpoint_variance"])
+        if guidance_accuracy and guidance_accuracy.get("mean_midpoint_variance") is not None
+        else None
+    )
+    guidance_accuracy_score = (
+        max(0.0, min(100.0, 100 - absolute_guidance_variance * 100))
+        if accuracy_count >= 3 and absolute_guidance_variance is not None
+        else max(35.0, 50.0 - max(0, 3 - accuracy_count) * 5)
+    )
+
+    components = {
+        "Historical cash-flow stability": stability,
+        "Forecast sensitivity": sensitivity_score,
+        "Data completeness": max(0.0, min(100.0, completeness)),
+        "Cyclicality": cyclicality_score,
+        "Normalized FCF reliability": normalization_score,
+        "Terminal value dependence": terminal_dependence_score,
+        "Historical guidance accuracy": guidance_accuracy_score,
+    }
+    weights = {
+        "Historical cash-flow stability": 0.18,
+        "Forecast sensitivity": 0.18,
+        "Data completeness": 0.18,
+        "Cyclicality": 0.14,
+        "Normalized FCF reliability": 0.12,
+        "Terminal value dependence": 0.10,
+        "Historical guidance accuracy": 0.10,
+    }
+    score = sum(components[key] * weights[key] for key in components)
+    return {"score": round(score), "components": components}
+
+
+def reverse_dcf_growth(
+    market_enterprise_value: float | None,
+    starting_fcf: float | None,
+    diluted_shares: float | None,
+    cash: float | None,
+    debt: float | None,
+    minority_interest: float | None,
+    discount_rate: float,
+    terminal_growth: float,
+    years: int = 5,
+) -> float | None:
+    """Find a uniform annual FCF growth rate implied by the market EV."""
+    if (
+        market_enterprise_value is None or starting_fcf is None or starting_fcf <= 0
+        or diluted_shares is None or diluted_shares <= 0 or cash is None or debt is None
+        or not 0 <= terminal_growth < discount_rate
+    ):
+        return None
+
+    low, high = -0.95, 2.0
+    low_value = calculate_dcf(
+        starting_fcf, diluted_shares, cash, debt, minority_interest,
+        [low] * years, discount_rate, terminal_growth,
+    )
+    high_value = calculate_dcf(
+        starting_fcf, diluted_shares, cash, debt, minority_interest,
+        [high] * years, discount_rate, terminal_growth,
+    )
+    if not low_value or not high_value:
+        return None
+    if not low_value["enterprise_value"] <= market_enterprise_value <= high_value["enterprise_value"]:
+        return None
+
+    for _ in range(80):
+        middle = (low + high) / 2
+        result = calculate_dcf(
+            starting_fcf, diluted_shares, cash, debt, minority_interest,
+            [middle] * years, discount_rate, terminal_growth,
+        )
+        if not result:
+            return None
+        if result["enterprise_value"] < market_enterprise_value:
+            low = middle
+        else:
+            high = middle
+    return (low + high) / 2
+
+
+def classify_cyclicality(
+    ticker: str, name: str, industry: str, sector: str, summary: str | None
+) -> tuple[bool, str]:
+    """Classify cyclical industries using provider profile text and explicit ticker rules."""
+    profile = " ".join((ticker, name, industry, sector, summary or "")).casefold()
+    if ticker.upper() == "MU" or any(
+        word in profile for word in ("memory semiconductor", "dram", "nand", "flash memory")
+    ):
+        return True, "Memory semiconductors"
+    cyclical_terms = (
+        "semiconductor", "chip", "automobile", "automotive", "steel", "mining",
+        "oil & gas", "oil and gas", "energy", "chemical", "airline", "shipping",
+        "commodity", "materials",
+    )
+    if any(term in profile for term in cyclical_terms):
+        return True, "Cyclical industry"
+    return False, "No explicit cyclical-industry match"
+
+
+def industry_peer_tickers(ticker: str, industry: str, sector: str) -> list[str]:
+    """Return a short peer set selected for the business industry, not cross-sector benchmarks."""
+    profile = f"{ticker} {industry} {sector}".casefold()
+    if ticker.upper() == "MU" or any(
+        word in profile for word in ("memory semiconductor", "dram", "nand", "flash memory")
+    ):
+        return ["000660.KS", "005930.KS"]
+    if "semiconductor" in profile or "chip" in profile:
+        return ["NVDA", "AMD", "AVGO", "TSM", "ASML"]
+    if "software" in profile:
+        return ["CRM", "ADBE", "NOW", "ORCL", "INTU"]
+    if "automotive" in profile or "automobile" in profile:
+        return ["TM", "HMC", "BMW.DE", "MBG.DE", "STLA"]
+    if "oil" in profile or "energy" in profile:
+        return ["XOM", "CVX", "SHEL.L", "TTE.PA", "COP"]
+    return []
 
 
 def recommendation(score: float | None) -> str:
@@ -318,6 +806,7 @@ def company_metrics(data: dict[str, Any]) -> dict[str, Any]:
     """Create comparable inputs while retaining source units and missing values."""
     info = data["info"]
     annual = financial_history(data)
+    quarterly = quarterly_financial_history(data)
     history = data["history"]
     performance = performance_metrics(history)
     latest = annual[-1] if annual else {}
@@ -327,26 +816,49 @@ def company_metrics(data: dict[str, Any]) -> dict[str, Any]:
         return _number(info.get(key))
 
     price = _number(history["Close"].dropna().iloc[-1]) if not history.empty else None
-    shares = info_value("sharesOutstanding")
+    basic_shares = info_value("sharesOutstanding")
     market_cap = info_value("marketCap")
-    if market_cap is None and shares is not None and price is not None:
-        market_cap = shares * price
+    if market_cap is None and basic_shares is not None and price is not None:
+        market_cap = basic_shares * price
     total_debt = info_value("totalDebt")
+    debt_source = "Yahoo Finance company profile" if total_debt is not None else None
     if total_debt is None:
         total_debt = latest.get("Total debt")
+        debt_source = "Latest annual balance sheet" if total_debt is not None else None
     cash = info_value("totalCash")
+    cash_source = "Yahoo Finance company profile" if cash is not None else None
     if cash is None:
         cash = latest.get("Cash")
+        cash_source = "Latest annual balance sheet" if cash is not None else None
     enterprise_value = info_value("enterpriseValue")
     if enterprise_value is None and market_cap is not None and total_debt is not None and cash is not None:
         enterprise_value = market_cap + total_debt - cash
-    revenue = latest.get("Revenue")
+    reported_revenue = latest.get("Revenue")
+    revenue_source = (
+        "Latest annual income statement" if reported_revenue is not None
+        else "Yahoo Finance company profile" if info_value("totalRevenue") is not None
+        else None
+    )
+    revenue = reported_revenue if reported_revenue is not None else info_value("totalRevenue")
     earnings = latest.get("Net income")
     fcf = latest.get("Free cash flow")
     ebitda = latest.get("EBITDA") or info_value("ebitda")
     net_debt = total_debt - cash if total_debt is not None and cash is not None else None
-    if not shares and market_cap and price:
-        shares = market_cap / price
+    if not basic_shares and market_cap and price:
+        basic_shares = market_cap / price
+    diluted_shares = latest.get("Diluted shares") or info_value("impliedSharesOutstanding")
+    if diluted_shares is None:
+        diluted_shares = basic_shares
+    minority_interest = (
+        latest.get("Minority interest")
+        if latest.get("Minority interest") is not None
+        else info_value("minorityInterest")
+    )
+    minority_interest_source = (
+        "Latest annual balance sheet" if latest.get("Minority interest") is not None
+        else "Yahoo Finance company profile" if info_value("minorityInterest") is not None
+        else None
+    )
     revenue_growth = (
         revenue / previous["Revenue"] - 1
         if revenue is not None and previous.get("Revenue") not in (None, 0)
@@ -372,11 +884,24 @@ def company_metrics(data: dict[str, Any]) -> dict[str, Any]:
         "52w_low": info_value("fiftyTwoWeekLow") or _number(history["Low"].tail(252).min()),
         "market_cap": market_cap,
         "enterprise_value": enterprise_value,
-        "shares": shares,
-        "revenue": revenue or info_value("totalRevenue"),
+        "shares": diluted_shares,
+        "basic_shares": basic_shares,
+        "diluted_shares": diluted_shares,
+        "share_count_source": (
+            "Diluted average shares" if latest.get("Diluted shares") is not None
+            else "Provider implied shares" if info_value("impliedSharesOutstanding") is not None
+            else "Basic shares outstanding proxy" if basic_shares is not None
+            else None
+        ),
+        "minority_interest": minority_interest,
+        "minority_interest_source": minority_interest_source,
+        "revenue": revenue,
+        "reported_revenue": reported_revenue,
+        "revenue_source": revenue_source,
         "revenue_growth": revenue_growth,
         "revenue_cagr_3y": annual_cagr(annual, "Revenue", 3),
         "revenue_cagr_5y": annual_cagr(annual, "Revenue", 5),
+        "reported_operating_margin": latest.get("Operating margin"),
         "gross_margin": latest.get("Gross margin") or info_value("grossMargins"),
         "operating_margin": latest.get("Operating margin") or info_value("operatingMargins"),
         "ebitda_margin": latest.get("EBITDA margin"),
@@ -385,9 +910,33 @@ def company_metrics(data: dict[str, Any]) -> dict[str, Any]:
         "eps": latest.get("EPS") or info_value("trailingEps"),
         "trailing_eps": info_value("trailingEps"),
         "eps_growth": info_value("earningsGrowth"),
-        "free_cash_flow": fcf if fcf is not None else info_value("freeCashflow"),
+        "free_cash_flow": fcf,
+        "historical_fcf": [row for row in annual if row.get("Free cash flow") is not None],
+        "historical_fcf_summary": historical_fcf_summary(annual),
+        "operating_cash_flow": latest.get("Operating cash flow"),
+        "capex": abs(latest["Capital expenditure"]) if latest.get("Capital expenditure") is not None else None,
+        "capex_margin": (
+            abs(latest["Capital expenditure"]) / latest["Revenue"]
+            if latest.get("Capital expenditure") is not None and latest.get("Revenue")
+            else None
+        ),
+        "depreciation_margin": (
+            latest["Depreciation and amortization"] / latest["Revenue"]
+            if latest.get("Depreciation and amortization") is not None and latest.get("Revenue")
+            else None
+        ),
+        "cash_tax_rate": (
+            max(0.0, min(0.5, latest["Tax provision"] / latest["Pretax income"]))
+            if latest.get("Tax provision") is not None and latest.get("Pretax income", 0) > 0
+            else None
+        ),
         "cash": cash,
+        "cash_source": cash_source,
         "debt": total_debt,
+        "debt_source": debt_source,
+        "fcf_source": (
+            "Latest annual cash-flow statement" if fcf is not None else None
+        ),
         "net_debt": net_debt,
         "current_ratio": (
             info_value("currentRatio")
@@ -418,6 +967,7 @@ def company_metrics(data: dict[str, Any]) -> dict[str, Any]:
         "institutional_ownership": info_value("heldPercentInstitutions"),
         "short_interest": info_value("shortPercentOfFloat"),
         "annual": annual,
+        "quarterly": quarterly,
         "history": history,
         "performance": performance,
         "retrieved_at": data["retrieved_at"],
