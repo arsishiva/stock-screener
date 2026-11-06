@@ -49,12 +49,17 @@ if st.session_state.get("local_user_data_error"):
 
 research_sections = {
     "Financial performance": "Financials",
-    "Business quality & growth": "7 Indicators",
+    "7 Indicators": "7 Indicators",
     "Valuation": "Valuation",
     "Technical analysis": "Technicals",
     "Risk analysis": "Risk analysis",
     "News & events": "Ownership & news",
 }
+
+
+def _activate_stock_research() -> None:
+    st.session_state["workspace_navigation"] = "Stock Research"
+
 
 with st.sidebar:
     st.markdown("### Equity research")
@@ -71,12 +76,15 @@ with st.sidebar:
         key="workspace_navigation",
         label_visibility="collapsed",
     )
+    st.markdown("**Stock Research**")
+    research_label = st.radio(
+        "Research section",
+        options=tuple(research_sections),
+        key="research_navigation",
+        on_change=_activate_stock_research,
+        label_visibility="collapsed",
+    )
     if workspace == "Stock Research":
-        research_label = st.selectbox(
-            "Research section",
-            options=tuple(research_sections),
-            key="research_navigation",
-        )
         navigation = research_sections[research_label]
     else:
         navigation = {
@@ -531,6 +539,25 @@ def _build_comparison(
     }
 
     return _heatmap_table(shown, raw, higher_is_better, lower_is_better, tickers), raw
+
+
+def _render_research_comparison(
+    title: str,
+    metric_group: str,
+    companies: dict[str, dict[str, Any]],
+    scores: dict[str, dict[str, float | None]],
+    fair_values: dict[str, float | None],
+    note: str,
+) -> None:
+    st.subheader(title)
+    comparison, _ = _build_comparison(companies, scores, fair_values, metric_group)
+    st.dataframe(
+        comparison,
+        height=520,
+        alt=f"{metric_group} comparison across the analyzed company and available benchmarks",
+    )
+    _render_heatmap_legend()
+    st.caption(note)
 
 
 def _build_seven_indicator_comparison(
@@ -1391,6 +1418,43 @@ if navigation == "Overview":
         st.line_chart(price_overlay, y_label="Indexed price (start = 100)", alt="Five-year price performance indexed to 100 for the analyzed stock and available benchmarks")
         st.caption("Adjusted closing prices are indexed to 100 at each series' first available date; currencies are therefore comparable as percentage changes.")
 
+    st.subheader("Price and moving averages")
+    target_history = target["history"]
+    if target_history.empty or "Close" not in target_history.columns:
+        st.info("Price history is unavailable, so moving averages cannot be displayed.")
+    else:
+        overview_technical = technical_indicators(target_history)
+        latest_technical = overview_technical.iloc[-1]
+        price_metrics = st.columns(3)
+        price_metrics[0].metric(
+            "Adjusted close",
+            _fmt(latest_technical.get("Close"), target["currency"], "money"),
+        )
+        price_metrics[1].metric(
+            "50-day moving average",
+            _fmt(latest_technical.get("SMA 50"), target["currency"], "money"),
+        )
+        price_metrics[2].metric(
+            "200-day moving average",
+            _fmt(latest_technical.get("SMA 200"), target["currency"], "money"),
+        )
+        moving_average_chart = overview_technical.tail(365)[
+            ["Close", "SMA 50", "SMA 200"]
+        ].rename(columns={
+            "Close": "Market price",
+            "SMA 50": "50-day moving average",
+            "SMA 200": "200-day moving average",
+        })
+        st.line_chart(
+            moving_average_chart,
+            y_label=f"Adjusted price ({target['currency']})",
+            alt="Adjusted market price with 50-day and 200-day simple moving averages",
+        )
+        st.caption(
+            "Moving averages are calculated from adjusted daily closing prices. "
+            "They describe historical price trends and are not forecasts."
+        )
+
 elif navigation == "Comparison":
     st.header("Benchmark and peer comparison")
     st.write(
@@ -1526,9 +1590,11 @@ elif navigation == "Financials":
             ("Revenue", "Operating margin", "Net income", "EPS", "Free cash flow", "Revenue growth"),
             key="financial_metric",
         )
-        chart = _financial_overlay({ticker: target}, chart_metric)
+        chart = _financial_overlay(companies, chart_metric)
         if chart.empty:
-            st.warning(f"No reported {chart_metric.lower()} history is available.")
+            st.warning(
+                f"No reported {chart_metric.lower()} history is available for this company or its benchmarks."
+            )
         else:
             indexed = chart_metric in ("Revenue", "Net income", "EPS", "Free cash flow")
             st.line_chart(
@@ -1536,7 +1602,7 @@ elif navigation == "Financials":
                 y_label="Indexed (first positive year = 100)" if indexed else (
                     "Percent" if "margin" in chart_metric.casefold() or chart_metric == "Revenue growth" else chart_metric
                 ),
-                alt=f"Annual {chart_metric.lower()} trend for {target['name']}",
+                alt=f"Annual {chart_metric.lower()} trend for {target['name']} and available benchmarks",
             )
         st.subheader("Reported annual financials")
         financial_table = _format_annual(annual, target["currency"])
@@ -1549,6 +1615,15 @@ elif navigation == "Financials":
             f"Source: Yahoo Finance via yfinance · reporting currency {target['currency']} · "
             "financial statement values are annual and are not estimates."
         )
+    _render_research_comparison(
+        "Financial performance vs benchmarks",
+        "Financials",
+        companies,
+        scores,
+        fair_values,
+        "Benchmarks and available peers are shown using reported fiscal periods. "
+        "Financial amounts remain in each company's reporting currency; growth and margins are more directly comparable.",
+    )
 
 elif navigation == "Valuation":
     st.header("Valuation and return scenarios")
@@ -2260,6 +2335,16 @@ elif navigation == "Valuation":
             "A multi-fold share-price gain would require earnings growth and/or valuation expansion to justify it."
         )
 
+    _render_research_comparison(
+        "Valuation multiples vs benchmarks",
+        "Valuation",
+        companies,
+        scores,
+        fair_values,
+        "Permanent benchmarks provide broad market context and may not be direct industry peers. "
+        "Use the industry-comparable valuation above for peer multiples; prices and financial amounts retain local currencies.",
+    )
+
 elif navigation == "Technicals":
     st.header("Price and technical analysis")
     timeframe = st.segmented_control(
@@ -2321,6 +2406,48 @@ elif navigation == "Technicals":
         "Indicators use adjusted daily OHLCV history returned by Yahoo Finance. "
         "No signal or indicator is a prediction of future returns."
     )
+    st.subheader(f"{timeframe} price performance vs benchmarks")
+    benchmark_price_chart = _chart_history(companies, days)
+    if benchmark_price_chart.empty:
+        st.info("Benchmark price history is unavailable for the selected period.")
+    else:
+        st.line_chart(
+            benchmark_price_chart,
+            y_label="Indexed price (first available close = 100)",
+            alt=f"{timeframe} indexed price comparison for {target['name']} and available benchmarks",
+        )
+        st.caption(
+            "Each company's price is indexed to its first available adjusted close in this period, "
+            "so percentage performance can be compared without converting currencies."
+        )
+
+    benchmark_technical_rows = []
+    for symbol, company in companies.items():
+        history = company["history"]
+        if history.empty or "Close" not in history.columns:
+            continue
+        latest_peer = technical_indicators(history).iloc[-1]
+        benchmark_technical_rows.append({
+            "Company": f"{company['name']} ({symbol})",
+            "Currency": company["currency"],
+            "Adjusted close": _fmt(latest_peer.get("Close"), company["currency"], "money"),
+            "SMA 50": _fmt(latest_peer.get("SMA 50"), company["currency"], "money"),
+            "SMA 200": _fmt(latest_peer.get("SMA 200"), company["currency"], "money"),
+            "RSI (14)": _fmt(latest_peer.get("RSI 14")),
+            "1-year return": _fmt(
+                company["performance"].get("1 year return"), kind="percent"
+            ),
+            "Beta": _fmt(company["beta"]),
+        })
+    st.subheader("Latest technical indicators vs benchmarks")
+    if benchmark_technical_rows:
+        st.dataframe(
+            pd.DataFrame(benchmark_technical_rows),
+            hide_index=True,
+            alt="Latest price, moving averages, RSI, one-year return, and beta for the company and benchmarks",
+        )
+    else:
+        st.info("Benchmark technical indicators are unavailable.")
 
 elif navigation == "Ownership & news":
     st.header("Ownership, analyst data, and sources")
@@ -2359,6 +2486,38 @@ elif navigation == "Ownership & news":
     st.caption(
         f"Retrieved {target['retrieved_at']:%Y-%m-%d %H:%M UTC}. "
         "Check the company's filings and investor-relations materials before making an investment decision."
+    )
+    ownership_comparison = [
+        {
+            "Company": f"{company['name']} ({symbol})",
+            "Insider ownership": _fmt(company.get("insider_ownership"), kind="percent"),
+            "Institutional ownership": _fmt(
+                company.get("institutional_ownership"), kind="percent"
+            ),
+            "Short interest / float": _fmt(
+                company.get("short_interest"), kind="percent"
+            ),
+            "Analyst rating": (
+                str(company["analyst_rating"]).upper()
+                if company.get("analyst_rating") else "N/A"
+            ),
+            "Analyst count": _fmt(company.get("analyst_count")),
+            "Mean analyst target": _fmt(
+                company.get("analyst_target"), company.get("currency"), "money"
+            ),
+            "Currency": company.get("currency", "N/A"),
+        }
+        for symbol, company in companies.items()
+    ]
+    st.subheader("Ownership and analyst data vs benchmarks")
+    st.dataframe(
+        pd.DataFrame(ownership_comparison),
+        hide_index=True,
+        alt="Provider-reported ownership and analyst estimates for the company and available benchmarks",
+    )
+    st.caption(
+        "Availability and analyst coverage vary by company. Mean price targets retain each company's currency "
+        "and are not directly comparable across exchanges."
     )
 
 elif navigation == "Risk analysis":
@@ -2421,6 +2580,34 @@ elif navigation == "Risk analysis":
     st.caption(
         "The rule-based risk score reuses the existing scoring algorithm. "
         "Missing risk inputs remain unavailable rather than being estimated."
+    )
+    risk_comparison_rows = [
+        {
+            "Company": f"{company['name']} ({symbol})",
+            "Risk score": _fmt(scores[symbol].get("Risk"), kind="score"),
+            "Beta": _fmt(company.get("beta")),
+            "Maximum drawdown": _fmt(
+                company["performance"].get("Maximum drawdown"), kind="percent"
+            ),
+            "Historical volatility": _fmt(
+                company["performance"].get("Historical volatility"), kind="percent"
+            ),
+            "Net debt / EBITDA": _fmt(
+                company.get("net_debt_ebitda"), kind="multiple"
+            ),
+            "Current ratio": _fmt(company.get("current_ratio"), kind="multiple"),
+        }
+        for symbol, company in companies.items()
+    ]
+    st.subheader("Risk indicators vs benchmarks")
+    st.dataframe(
+        pd.DataFrame(risk_comparison_rows),
+        hide_index=True,
+        alt="Risk score, beta, drawdown, volatility, debt, and liquidity for the company and benchmarks",
+    )
+    st.caption(
+        "Risk scores use the existing rule-based calculation. Higher risk scores indicate greater measured risk; "
+        "financial data availability and reporting periods vary by company."
     )
 
 elif navigation == "Watchlist":

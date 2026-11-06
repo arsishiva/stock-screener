@@ -60,6 +60,10 @@ def apply_theme(theme_name: str) -> None:
           color: var(--research-text);
           font-family: Inter, "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
         }}
+        [data-testid="stMain"],
+        [data-testid="stSidebar"] {{
+          color: var(--research-text);
+        }}
         [data-testid="stHeader"] {{
           background: transparent;
         }}
@@ -92,6 +96,24 @@ def apply_theme(theme_name: str) -> None:
           font-size: clamp(1.1rem, 1.6vw, 1.55rem);
           font-weight: 650;
         }}
+        [data-testid="stMarkdownContainer"] p,
+        [data-testid="stMarkdownContainer"] li,
+        [data-testid="stMarkdownContainer"] h1,
+        [data-testid="stMarkdownContainer"] h2,
+        [data-testid="stMarkdownContainer"] h3,
+        [data-testid="stMarkdownContainer"] h4,
+        [data-testid="stMarkdownContainer"] blockquote,
+        [data-testid="stWidgetLabel"] p,
+        [data-testid="stRadio"] label,
+        [data-testid="stCheckbox"] label,
+        [data-testid="stToggle"] label,
+        [data-testid="stCaptionContainer"],
+        [data-testid="stText"] {{
+          color: var(--research-text);
+        }}
+        [data-testid="stCaptionContainer"] {{
+          color: var(--research-muted);
+        }}
         [data-testid="stVerticalBlockBorderWrapper"] > div {{
           border-color: var(--research-border);
           border-radius: 12px;
@@ -103,6 +125,7 @@ def apply_theme(theme_name: str) -> None:
           overflow: hidden;
         }}
         [data-testid="stTextInput"] input,
+        [data-testid="stTextArea"] textarea,
         [data-testid="stNumberInput"] input,
         [data-testid="stSelectbox"] [data-baseweb="select"] > div,
         [data-testid="stMultiSelect"] [data-baseweb="select"] > div {{
@@ -111,6 +134,14 @@ def apply_theme(theme_name: str) -> None:
           border-color: var(--research-border);
           border-radius: 9px;
         }}
+        [data-testid="stSelectbox"] [data-baseweb="select"] *,
+        [data-testid="stMultiSelect"] [data-baseweb="select"] * {{
+          color: var(--research-text);
+        }}
+        [data-testid="stTextInput"] input::placeholder,
+        [data-testid="stTextArea"] textarea::placeholder {{
+          color: var(--research-muted);
+        }}
         [data-testid="stButton"] button,
         [data-testid="stFormSubmitButton"] button,
         [data-testid="stDownloadButton"] button {{
@@ -118,6 +149,13 @@ def apply_theme(theme_name: str) -> None:
           font-weight: 600;
           min-height: 2.55rem;
           transition: border-color 120ms ease, background 120ms ease;
+        }}
+        [data-testid="stButton"] button:not([kind="primary"]),
+        [data-testid="stFormSubmitButton"] button:not([kind="primary"]),
+        [data-testid="stDownloadButton"] button {{
+          background: var(--research-surface);
+          color: var(--research-text);
+          border-color: var(--research-border);
         }}
         [data-testid="stButton"] button[kind="primary"],
         [data-testid="stFormSubmitButton"] button[kind="primary"] {{
@@ -138,12 +176,6 @@ def apply_theme(theme_name: str) -> None:
         }}
         h2 {{
           font-size: clamp(1.3rem, 2.2vw, 1.8rem);
-        }}
-        p, label, [data-testid="stCaptionContainer"] {{
-          color: inherit;
-        }}
-        [data-testid="stCaptionContainer"] {{
-          color: var(--research-muted);
         }}
         [data-testid="stAlert"] {{
           border-radius: 10px;

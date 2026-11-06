@@ -27,6 +27,7 @@ Enter a ticker in the sidebar. Use Yahoo Finance exchange suffixes for non-US li
 ## Features
 
 - Fintech-style responsive Streamlit shell with persistent dark/light appearance settings, company overview cards, and global ticker search.
+- Always-visible Stock Research radio navigation for financials, 7 Indicators, valuation, technicals, risk, and ownership/news pages.
 - Local JSON watchlist and manually entered portfolio positions; user data is stored outside the repository at `~\.stock-screener\user_data.json` on Windows (or `~/.stock-screener/user_data.json` on macOS/Linux).
 - Latest available price, company profile, annual/quarterly statements, and ownership aggregates from Yahoo Finance through `yfinance`.
 - SEC EDGAR filing discovery for supported US-listed issuers, with source-linked numeric guidance extracted from recent earnings-related 8-K/6-K exhibits.
@@ -37,6 +38,7 @@ Enter a ticker in the sidebar. Use Yahoo Finance exchange suffixes for non-US li
 - A seven-indicator view for growth, margins, moat proxies, financial health, valuation, management, and momentum.
 - Editable standard and normalized DCF models with annual FCF and revenue growth schedules, five scenarios, industry comparables, reverse DCF, WACC/terminal-growth sensitivity, and an independent confidence score.
 - Historical financial charts, indexed price comparisons, technical overlays, and calculated indicators.
+- Research-page benchmark comparisons for financial performance, valuation multiples, price/technical indicators, ownership/analyst coverage, and risk measures.
 
 ## Project layout
 
