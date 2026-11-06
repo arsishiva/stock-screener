@@ -20,6 +20,13 @@ from stock_screener.analysis import (
     validate_ticker,
 )
 from stock_screener.guidance import build_financial_forecast, fetch_official_guidance
+from stock_screener.ui.components import render_company_heading
+from stock_screener.ui.theme import apply_theme
+from stock_screener.user_data import (
+    DEFAULT_USER_DATA_PATH,
+    load_user_data,
+    save_user_data,
+)
 
 st.set_page_config(
     page_title="Equity Research | Stock Screener",
@@ -27,45 +34,95 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("Equity research")
-st.caption(
-    "Fundamentals, valuation, and price trends in one place. "
-    "Market data is provided by Yahoo Finance and may be delayed."
-)
-
 if "analysis_ticker" not in st.session_state:
     st.session_state["analysis_ticker"] = "NVDA"
 
-with st.sidebar:
-    st.subheader("Analyze a company")
-    with st.form("ticker_search"):
-        ticker_input = st.text_input(
-            "Ticker symbol",
-            value=st.session_state["analysis_ticker"],
-            placeholder="e.g. NVDA or RELIANCE.NS",
-            help="Use the exchange suffix for non-US listings, such as .NS, .L, .DE, or .T.",
-        )
-        submitted = st.form_submit_button(
-            "Run analysis",
-            type="primary",
-            icon=":material/search:",
-            width="stretch",
-        )
-    if submitted:
-        try:
-            st.session_state["analysis_ticker"] = validate_ticker(ticker_input)
-        except ValueError as exc:
-            st.error(str(exc))
+if "local_user_data" not in st.session_state:
+    local_user_data, local_user_data_error = load_user_data()
+    st.session_state["local_user_data"] = local_user_data
+    st.session_state["local_user_data_error"] = local_user_data_error
 
+user_data = st.session_state["local_user_data"]
+apply_theme(user_data["theme"])
+if st.session_state.get("local_user_data_error"):
+    st.sidebar.warning(st.session_state["local_user_data_error"])
+
+research_sections = {
+    "Financial performance": "Financials",
+    "Business quality & growth": "7 Indicators",
+    "Valuation": "Valuation",
+    "Technical analysis": "Technicals",
+    "Risk analysis": "Risk analysis",
+    "News & events": "Ownership & news",
+}
+
+with st.sidebar:
+    st.markdown("### Equity research")
+    workspace = st.radio(
+        "Workspace",
+        options=(
+            "Dashboard",
+            "Stock Research",
+            "Compare Stocks",
+            "Watchlist",
+            "Portfolio",
+            "Settings",
+        ),
+        key="workspace_navigation",
+        label_visibility="collapsed",
+    )
+    if workspace == "Stock Research":
+        research_label = st.selectbox(
+            "Research section",
+            options=tuple(research_sections),
+            key="research_navigation",
+        )
+        navigation = research_sections[research_label]
+    else:
+        navigation = {
+            "Dashboard": "Overview",
+            "Compare Stocks": "Comparison",
+            "Watchlist": "Watchlist",
+            "Portfolio": "Portfolio",
+            "Settings": "Settings",
+        }[workspace]
     st.divider()
-    st.markdown("**Permanent benchmarks**")
-    st.caption("Microsoft · Alphabet · Meta · Apple")
     peer_input = st.text_input(
         "Additional comparison tickers",
         placeholder="e.g. AMD, AVGO",
         help="Optional comma-separated peer symbols; use exchange suffixes when needed.",
+        key="additional_peers",
     )
+    st.markdown("**Permanent benchmarks**")
+    st.caption("MSFT · GOOGL · META · AAPL")
     st.caption("Comparison prices and reported financials keep their original currencies.")
+
+st.markdown("### Market research")
+st.caption("Company fundamentals, valuation, and price trends in one research workspace.")
+with st.form("ticker_search", border=False):
+    search_columns = st.columns([1.5, 3.2, 1], vertical_alignment="bottom")
+    with search_columns[0]:
+        st.markdown("**Global stock search**")
+    with search_columns[1]:
+        ticker_input = st.text_input(
+            "Ticker symbol",
+            value=st.session_state["analysis_ticker"],
+            placeholder="e.g. NVDA or RELIANCE.NS",
+            help="Use an exchange suffix for non-US listings, such as .NS, .L, .DE, or .T.",
+            key="global_ticker_search",
+        )
+    with search_columns[2]:
+        submitted = st.form_submit_button(
+            "Analyze",
+            type="primary",
+            icon=":material/search:",
+            width="stretch",
+        )
+if submitted:
+    try:
+        st.session_state["analysis_ticker"] = validate_ticker(ticker_input)
+    except ValueError as exc:
+        st.error(str(exc))
 
 
 @st.cache_data(ttl=900, max_entries=40, show_spinner=False)
@@ -85,6 +142,22 @@ def _load_company(ticker: str) -> tuple[str, dict[str, Any] | None, str | None]:
         return ticker, None, str(exc)
     except Exception as exc:
         return ticker, None, f"Unexpected data-provider error: {exc}"
+
+
+def _persist_user_data(updated_data: dict[str, Any]) -> bool:
+    try:
+        save_user_data(updated_data)
+    except OSError as exc:
+        st.error(f"Could not save your local data: {exc}")
+        return False
+    st.session_state["local_user_data"] = updated_data
+    st.session_state["local_user_data_error"] = None
+    return True
+
+
+def _open_research(ticker: str) -> None:
+    st.session_state["analysis_ticker"] = ticker
+    st.session_state["workspace_navigation"] = "Dashboard"
 
 
 def _clamp(value: float) -> float:
@@ -728,7 +801,16 @@ industry_peers = [
     symbol for symbol in industry_peers
     if symbol != ticker and symbol not in BENCHMARKS
 ]
-symbols = list(dict.fromkeys([ticker, *BENCHMARKS, *industry_peers, *peer_tickers]))
+personal_symbols = (
+    user_data["watchlist"]
+    if navigation == "Watchlist"
+    else [position["ticker"] for position in user_data["portfolio"]]
+    if navigation == "Portfolio"
+    else []
+)
+symbols = list(dict.fromkeys([
+    ticker, *BENCHMARKS, *industry_peers, *peer_tickers, *personal_symbols,
+]))
 fetched: dict[str, dict[str, Any]] = {ticker: initial_target_data}
 failures: dict[str, str] = {}
 
@@ -755,15 +837,6 @@ for symbol, message in failures.items():
 
 for warning in target["warnings"]:
     st.warning(warning)
-
-if target["summary"]:
-    st.subheader(f"{target['name']} · {ticker}")
-else:
-    st.subheader(f"{target['name']} · {ticker}")
-st.caption(
-    f"{target['sector']} · {target['industry']} · {target['exchange']} · "
-    f"{target['country']} · {target['currency']}"
-)
 
 with st.expander("Edit valuation assumptions", expanded=False):
     observed_growth = target["revenue_cagr_3y"]
@@ -1204,53 +1277,45 @@ target_upside = (
 )
 rating = recommendation(target_score)
 
-with st.container(horizontal=True):
-    st.metric(
-        "Last adjusted close",
-        _fmt(target["price"], target["currency"], "money"),
-        delta=_fmt(target["performance"].get("1 day return"), kind="percent")
-        if target["performance"].get("1 day return") is not None else None,
-        border=True,
-    )
-    st.metric("Market cap", _fmt(target["market_cap"], target["currency"], "large_money"), border=True)
-    st.metric(
-        "52-week range",
-        f"{_fmt(target['52w_low'], target['currency'])} – {_fmt(target['52w_high'], target['currency'])}",
-        border=True,
-    )
-    st.metric("Base DCF value", _fmt(target_fair_value, target["currency"], "money"), border=True)
-    st.metric(
-        "DCF implied upside",
-        _fmt(target_upside, kind="percent"),
-        delta=_fmt(target_upside, kind="percent") if target_upside is not None else None,
-        border=True,
-    )
-    st.metric("Rule-based rating", rating, border=True)
+if navigation not in {"Watchlist", "Portfolio", "Settings"}:
+    render_company_heading(target, ticker)
+    metric_rows = [
+        (
+            "Last adjusted close",
+            _fmt(target["price"], target["currency"], "money"),
+            _fmt(target["performance"].get("1 day return"), kind="percent")
+            if target["performance"].get("1 day return") is not None else None,
+        ),
+        ("Market cap", _fmt(target["market_cap"], target["currency"], "large_money"), None),
+        (
+            "52-week range",
+            f"{_fmt(target['52w_low'], target['currency'])} – {_fmt(target['52w_high'], target['currency'])}",
+            None,
+        ),
+        ("Base DCF value", _fmt(target_fair_value, target["currency"], "money"), None),
+        (
+            "DCF implied upside",
+            _fmt(target_upside, kind="percent"),
+            _fmt(target_upside, kind="percent") if target_upside is not None else None,
+        ),
+        ("Rule-based rating", rating, None),
+    ]
+    for start in (0, 3):
+        metric_columns = st.columns(3)
+        for column, (label, value, delta) in zip(
+            metric_columns, metric_rows[start:start + 3]
+        ):
+            column.metric(label, value, delta=delta, border=True, height="stretch")
 
-st.caption(
-    f"Price timestamp: {target['price_date']:%Y-%m-%d} · "
-    f"Data retrieved: {target['retrieved_at']:%Y-%m-%d %H:%M UTC} · "
-    f"Score coverage: {_fmt(scores[ticker]['Coverage'], kind='score')}"
-)
-st.info(
-    "Research only, not investment advice. The rating is a transparent quantitative screen, "
-    "not an AI opinion. DCF outputs are assumption-sensitive estimates, not objective fair values."
-)
-
-navigation = st.segmented_control(
-    "Analysis section",
-    options=(
-        "Overview",
-        "Comparison",
-        "7 Indicators",
-        "Financials",
-        "Valuation",
-        "Technicals",
-        "Ownership & news",
-    ),
-    default="Overview",
-    key="analysis_section",
-)
+    st.caption(
+        f"Price timestamp: {target['price_date']:%Y-%m-%d} · "
+        f"Data retrieved: {target['retrieved_at']:%Y-%m-%d %H:%M UTC} · "
+        f"Score coverage: {_fmt(scores[ticker]['Coverage'], kind='score')}"
+    )
+    st.caption(
+        "Research only, not investment advice. The rating is a transparent quantitative screen, "
+        "not an AI opinion. DCF outputs are assumption-sensitive estimates, not objective fair values."
+    )
 
 if navigation == "Overview":
     st.header("Investment summary")
@@ -1731,7 +1796,11 @@ elif navigation == "Valuation":
                         if source_info.get("classification") == "Model estimate"
                         else "No verified underlying source"
                     )
-                    source_retrieved_at = target.get("retrieved_at")
+                    source_retrieved_at = (
+                        target["retrieved_at"].strftime("%Y-%m-%d %H:%M UTC")
+                        if target.get("retrieved_at") is not None
+                        else None
+                    )
                     historical_rows = (
                         target["quarterly"][-8:]
                         if horizon == "Quarterly forecast"
@@ -2291,3 +2360,317 @@ elif navigation == "Ownership & news":
         f"Retrieved {target['retrieved_at']:%Y-%m-%d %H:%M UTC}. "
         "Check the company's filings and investor-relations materials before making an investment decision."
     )
+
+elif navigation == "Risk analysis":
+    st.header("Risk analysis")
+    st.caption(
+        "Risk indicators below are calculated from the existing price history and reported statements; "
+        "they are descriptive measures, not forecasts."
+    )
+    risk_columns = st.columns(4)
+    risk_metrics = (
+        ("Rule-based risk score", _fmt(scores[ticker].get("Risk"), kind="score")),
+        ("Beta", _fmt(target["beta"])),
+        (
+            "Maximum drawdown",
+            _fmt(target["performance"].get("Maximum drawdown"), kind="percent"),
+        ),
+        (
+            "Historical volatility",
+            _fmt(target["performance"].get("Historical volatility"), kind="percent"),
+        ),
+    )
+    for column, (label, value) in zip(risk_columns, risk_metrics):
+        column.metric(label, value, border=True, height="stretch")
+    risk_detail = [
+        {
+            "Measure": "Beta",
+            "Value": _fmt(target["beta"]),
+            "Source / interpretation": "Provider-reported sensitivity to the market; unavailable if not supplied.",
+        },
+        {
+            "Measure": "Maximum drawdown",
+            "Value": _fmt(
+                target["performance"].get("Maximum drawdown"), kind="percent"
+            ),
+            "Source / interpretation": "Largest peak-to-trough decline in available adjusted price history.",
+        },
+        {
+            "Measure": "Historical volatility",
+            "Value": _fmt(
+                target["performance"].get("Historical volatility"), kind="percent"
+            ),
+            "Source / interpretation": "Annualized standard deviation of daily returns in available history.",
+        },
+        {
+            "Measure": "Net debt / EBITDA",
+            "Value": _fmt(target["net_debt_ebitda"], kind="multiple"),
+            "Source / interpretation": "Latest available balance-sheet net debt divided by EBITDA.",
+        },
+        {
+            "Measure": "Current ratio",
+            "Value": _fmt(target["current_ratio"], kind="multiple"),
+            "Source / interpretation": "Latest available current assets divided by current liabilities.",
+        },
+    ]
+    st.dataframe(
+        pd.DataFrame(risk_detail),
+        hide_index=True,
+        alt="Existing market, price-history, and balance-sheet risk indicators with definitions",
+    )
+    st.caption(
+        "The rule-based risk score reuses the existing scoring algorithm. "
+        "Missing risk inputs remain unavailable rather than being estimated."
+    )
+
+elif navigation == "Watchlist":
+    st.header("Watchlist")
+    st.caption(
+        "Track tickers locally. Quotes and scores shown here come from the same cached market-data "
+        "and analysis pipeline used elsewhere in the app."
+    )
+    with st.container(border=True):
+        with st.form("add_watchlist_ticker", border=False):
+            watchlist_columns = st.columns([3, 1], vertical_alignment="bottom")
+            with watchlist_columns[0]:
+                watchlist_ticker = st.text_input(
+                    "Ticker to add",
+                    placeholder="e.g. MSFT or RELIANCE.NS",
+                    key="watchlist_ticker_input",
+                )
+            with watchlist_columns[1]:
+                add_watchlist_ticker = st.form_submit_button(
+                    "Add to watchlist",
+                    type="primary",
+                    icon=":material/bookmark_add:",
+                    width="stretch",
+                    key="add_watchlist_ticker",
+                )
+    if add_watchlist_ticker:
+        try:
+            normalized_ticker = validate_ticker(watchlist_ticker)
+        except ValueError as exc:
+            st.error(str(exc))
+        else:
+            if normalized_ticker in user_data["watchlist"]:
+                st.warning(f"{normalized_ticker} is already in your watchlist.")
+            else:
+                updated_data = {
+                    **user_data,
+                    "watchlist": [*user_data["watchlist"], normalized_ticker],
+                }
+                if _persist_user_data(updated_data):
+                    st.rerun()
+
+    st.subheader(f"Saved tickers · {len(user_data['watchlist'])}")
+    if not user_data["watchlist"]:
+        st.info("Your watchlist is empty. Add a ticker above to get started.")
+    for watchlist_symbol in user_data["watchlist"]:
+        company = companies.get(watchlist_symbol)
+        company_name = company["name"] if company else watchlist_symbol
+        watchlist_score = scores.get(watchlist_symbol, {}).get("Overall score")
+        quote_price = company.get("price") if company else None
+        daily_return = (
+            company.get("performance", {}).get("1 day return")
+            if company else None
+        )
+        with st.container(border=True):
+            row_columns = st.columns([2.2, 1.2, 1.1, 1, 0.8, 0.8], vertical_alignment="center")
+            with row_columns[0]:
+                st.markdown(f"**{company_name}**")
+                st.caption(watchlist_symbol)
+            row_columns[1].metric(
+                "Last close",
+                _fmt(quote_price, company["currency"] if company else None, "money"),
+            )
+            row_columns[2].metric(
+                "Daily change",
+                _fmt(daily_return, kind="percent"),
+                delta=_fmt(daily_return, kind="percent") if daily_return is not None else None,
+            )
+            row_columns[3].metric(
+                "Screen score", _fmt(watchlist_score, kind="score")
+            )
+            row_columns[4].button(
+                "Research",
+                key=f"research_watchlist_{watchlist_symbol}",
+                icon=":material/search:",
+                on_click=_open_research,
+                args=(watchlist_symbol,),
+                width="stretch",
+            )
+            if row_columns[5].button(
+                "Remove",
+                key=f"remove_watchlist_{watchlist_symbol}",
+                icon=":material/bookmark_remove:",
+                help=f"Remove {watchlist_symbol} from your watchlist",
+                width="stretch",
+            ):
+                updated_data = {
+                    **user_data,
+                    "watchlist": [
+                        item for item in user_data["watchlist"]
+                        if item != watchlist_symbol
+                    ],
+                }
+                if _persist_user_data(updated_data):
+                    st.rerun()
+
+elif navigation == "Portfolio":
+    st.header("Portfolio")
+    st.caption(
+        "Manually entered positions are saved on this machine. Current value and return are shown "
+        "only when a quote is available; different trading currencies are not combined."
+    )
+    with st.container(border=True):
+        with st.form("add_portfolio_position", border=False):
+            position_columns = st.columns([1.5, 1.3, 1.3, 1], vertical_alignment="bottom")
+            with position_columns[0]:
+                position_ticker_input = st.text_input(
+                    "Ticker",
+                    placeholder="e.g. AAPL",
+                    key="portfolio_ticker_input",
+                )
+            with position_columns[1]:
+                position_quantity = st.number_input(
+                    "Shares",
+                    min_value=0.000001,
+                    value=1.0,
+                    step=1.0,
+                    format="%.6f",
+                    key="portfolio_quantity_input",
+                )
+            with position_columns[2]:
+                position_cost = st.number_input(
+                    "Average cost / share",
+                    min_value=0.0,
+                    value=0.0,
+                    step=1.0,
+                    format="%.4f",
+                    key="portfolio_cost_input",
+                    help="Enter the average cost in the ticker's trading currency.",
+                )
+            with position_columns[3]:
+                add_position = st.form_submit_button(
+                    "Add position",
+                    type="primary",
+                    icon=":material/add:",
+                    width="stretch",
+                    key="add_portfolio_position",
+                )
+    if add_position:
+        try:
+            normalized_ticker = validate_ticker(position_ticker_input)
+        except ValueError as exc:
+            st.error(str(exc))
+        else:
+            if any(
+                position["ticker"] == normalized_ticker
+                for position in user_data["portfolio"]
+            ):
+                st.warning(
+                    f"{normalized_ticker} is already in the portfolio. "
+                    "Remove it first if you need to replace the saved position."
+                )
+            else:
+                new_position = {
+                    "ticker": normalized_ticker,
+                    "quantity": position_quantity,
+                    "average_cost": position_cost,
+                }
+                updated_data = {
+                    **user_data,
+                    "portfolio": [*user_data["portfolio"], new_position],
+                }
+                if _persist_user_data(updated_data):
+                    st.rerun()
+
+    st.subheader(f"Positions · {len(user_data['portfolio'])}")
+    if not user_data["portfolio"]:
+        st.info("No positions have been added. Enter a ticker, share count, and average cost above.")
+    for position in user_data["portfolio"]:
+        position_ticker = position["ticker"]
+        company = companies.get(position_ticker)
+        price = company.get("price") if company else None
+        currency = company.get("currency") if company else "N/A"
+        shares = position["quantity"]
+        average_cost = position["average_cost"]
+        market_value = price * shares if price is not None else None
+        cost_basis = average_cost * shares
+        unrealized_gain = market_value - cost_basis if market_value is not None else None
+        return_pct = (
+            unrealized_gain / cost_basis
+            if unrealized_gain is not None and cost_basis > 0 else None
+        )
+        company_name = company["name"] if company else position_ticker
+        with st.container(border=True):
+            st.markdown(f"**{company_name} · {position_ticker}**")
+            position_columns = st.columns([1, 1, 1, 1, 1, 0.8], vertical_alignment="center")
+            position_columns[0].metric("Shares", _fmt(shares))
+            position_columns[1].metric(
+                "Average cost",
+                _fmt(average_cost, currency, "money"),
+            )
+            position_columns[2].metric(
+                "Last close",
+                _fmt(price, currency, "money"),
+            )
+            position_columns[3].metric(
+                "Market value",
+                _fmt(market_value, currency, "large_money"),
+            )
+            position_columns[4].metric(
+                "Unrealized return",
+                _fmt(unrealized_gain, currency, "large_money"),
+                delta=_fmt(return_pct, kind="percent")
+                if return_pct is not None else None,
+            )
+            if position_columns[5].button(
+                "Remove",
+                key=f"remove_position_{position_ticker}",
+                icon=":material/delete:",
+                help=f"Remove {position_ticker} from your portfolio",
+                width="stretch",
+            ):
+                updated_data = {
+                    **user_data,
+                    "portfolio": [
+                        item for item in user_data["portfolio"]
+                        if item["ticker"] != position_ticker
+                    ],
+                }
+                if _persist_user_data(updated_data):
+                    st.rerun()
+
+elif navigation == "Settings":
+    st.header("Settings")
+    st.subheader("Appearance")
+    selected_theme = st.radio(
+        "Color theme",
+        options=("Dark", "Light"),
+        index=("Dark", "Light").index(user_data["theme"]),
+        horizontal=True,
+        key="appearance_theme",
+    )
+    if selected_theme != user_data["theme"]:
+        updated_data = {**user_data, "theme": selected_theme}
+        if _persist_user_data(updated_data):
+            st.rerun()
+    st.caption(
+        "Theme preferences and personal lists are stored locally on this machine. "
+        "They are not synced to GitHub or other devices."
+    )
+    st.code(str(DEFAULT_USER_DATA_PATH), language=None)
+    st.subheader("Data")
+    st.caption(
+        "Quotes and financial data use the existing Yahoo Finance integration; official guidance "
+        "uses the existing SEC EDGAR integration."
+    )
+    if st.button(
+        "Refresh cached market and filing data",
+        icon=":material/refresh:",
+        key="refresh_all_data",
+    ):
+        get_stock_data.clear()
+        get_company_guidance.clear()
+        st.rerun()

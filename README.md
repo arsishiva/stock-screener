@@ -26,6 +26,8 @@ Enter a ticker in the sidebar. Use Yahoo Finance exchange suffixes for non-US li
 
 ## Features
 
+- Fintech-style responsive Streamlit shell with persistent dark/light appearance settings, company overview cards, and global ticker search.
+- Local JSON watchlist and manually entered portfolio positions; user data is stored outside the repository at `~\.stock-screener\user_data.json` on Windows (or `~/.stock-screener/user_data.json` on macOS/Linux).
 - Latest available price, company profile, annual/quarterly statements, and ownership aggregates from Yahoo Finance through `yfinance`.
 - SEC EDGAR filing discovery for supported US-listed issuers, with source-linked numeric guidance extracted from recent earnings-related 8-K/6-K exhibits.
 - Quarterly and five-or-more-year annual financial forecasts, with company-guidance, analyst-consensus, model-estimate, and unavailable classifications kept distinct.
@@ -44,7 +46,14 @@ Enter a ticker in the sidebar. Use Yahoo Finance exchange suffixes for non-US li
 ├── stock_screener/
 │   ├── app.py                       # Dashboard UI
 │   ├── analysis.py                  # Market data and calculation functions
+│   ├── guidance.py                  # SEC filing guidance and forecast inputs
+│   ├── user_data.py                 # Local watchlist, portfolio, and preferences
+│   ├── ui/
+│   │   ├── components.py            # Reusable presentation components
+│   │   └── theme.py                 # Fintech theme tokens and responsive styling
 │   └── legacy/                      # Retained utilities from the original screener
+├── .streamlit/
+│   └── config.toml                  # Default dark theme
 ├── data/
 │   └── tickers.csv                  # Optional ticker universe for legacy utilities
 ├── scripts/
@@ -77,6 +86,7 @@ The current analysis dashboard does not use the legacy synthetic screener utilit
 - The forecast prioritizes numeric period-matched SEC guidance, then uses disclosed model assumptions for uncovered periods. Qualitative statements are not converted into numeric commitments. Quarterly period mapping is approximate for companies whose fiscal quarters differ from calendar quarters; review the reported period and source evidence.
 - The current filing parser scans recent SEC 8-K/6-K exhibits for numeric guidance and discovers recent annual/quarterly filing references. It does not claim complete coverage of presentations, prepared remarks, transcripts, or guidance published only outside SEC filings.
 - DCF and scoring outputs are rule-based illustrations, sensitive to assumptions, and not investment advice or a prediction of returns.
+- Watchlist entries, manual portfolio positions, and theme preferences are stored as local JSON in the user's home directory. They are not committed to this repository, encrypted, or synced across machines; portfolio quantities and average costs are user-entered and quotes can be unavailable or delayed.
 - Standard DCF forecasts revenue, margins, operating cash flow, and capital expenditure from available reports, period-matched company guidance, and explicit model assumptions; forecast FCF is operating cash flow less capital expenditure. If required inputs are missing, the DCF remains unavailable. Reported/provider cash and debt and diluted shares are used when available.
 - Normalized FCF is estimated from median reported revenue multiplied by the difference between median operating-cash-flow margin and median capex/revenue, requiring at least three complete periods. Five years are preferred. Reported FCF history, its median reference, coverage, and peak/trough periods are shown, and the normalized starting FCF is editable.
 - DCF scenarios are deterministic assumptions, not probability-weighted forecasts. Annual revenue growth, normalized-DCF FCF growth, WACC, terminal growth, operating margin, tax rate, and capex intensity can be edited. Missing inputs remain unavailable; a basic-share proxy is explicitly identified when diluted shares are unavailable.
