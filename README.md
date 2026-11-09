@@ -35,6 +35,7 @@ Enter a ticker in the sidebar. Use Yahoo Finance exchange suffixes for non-US li
 - Forecast-derived standard DCF using projected operating cash flow less capital expenditure; a separate normalized-FCF DCF; per-line source/date inspection; and matched historical revenue-guidance accuracy where periods can be aligned.
 - Financial and technical calculations derived from provider data, with missing values left unavailable.
 - Side-by-side comparison with MSFT, GOOGL, META, and AAPL, including a seven-shade red-to-yellow-to-green relative heatmap and CSV export.
+- Anonymous shared score history backed by Supabase: one latest scorecard per ticker, plus an immutable daily UTC snapshot history across users and sessions.
 - A seven-indicator view for growth, margins, moat proxies, financial health, valuation, management, and momentum.
 - Editable standard and normalized DCF models with annual FCF and revenue growth schedules, five scenarios, industry comparables, reverse DCF, WACC/terminal-growth sensitivity, and an independent confidence score.
 - Historical financial charts, indexed price comparisons, technical overlays, and calculated indicators.
@@ -95,6 +96,25 @@ The current analysis dashboard does not use the legacy synthetic screener utilit
 - Industry EV/EBITDA references use selected industry peers rather than the permanent cross-sector benchmarks. For Micron, SK Hynix and Samsung Electronics are prioritized; Samsung's diversified business mix is noted. The current integration has no direct memory-price series.
 - The DCF confidence score is separate from implied upside and includes historical FCF stability, scenario sensitivity, input completeness, cyclicality, normalized-FCF history, terminal-value dependence, and matched prior-guidance accuracy when enough data exists. Very high modeled upside triggers an assumption-review warning.
 - This project is for research only; it does not execute trades.
+
+## Shared score history database
+
+The **Score History** page stores anonymous ticker scorecards in a shared Supabase PostgreSQL database. It records analyzed tickers and available benchmarks, one snapshot per ticker per UTC day. The page shows the latest score per ticker and the complete daily snapshot history. It stores no user identifiers. Valuation is left unavailable in this shared scorecard because the existing valuation score uses user-editable, ticker-specific DCF assumptions; the overall score uses the remaining available dimensions.
+
+There was no shared analysis log before this feature. Historical records therefore start when the shared database is configured and the app first analyzes each ticker; earlier analyses from other users or sessions cannot be reconstructed.
+
+1. Create a Supabase project and run the SQL in [supabase/score_history.sql](./supabase/score_history.sql) in its SQL Editor.
+2. Add the project URL and **service-role key** as server-side secrets. In Streamlit Community Cloud, add these to the app's Secrets settings:
+
+   ```toml
+   SUPABASE_URL = "https://your-project.supabase.co"
+   SUPABASE_SERVICE_ROLE_KEY = "your-service-role-key"
+   ```
+
+   For local development, put the same TOML entries in `.streamlit/secrets.toml`. That file is git-ignored; never put the service-role key in source code or expose it in the browser.
+3. Restart or reload the app. Each analyzed ticker and its available benchmarks are recorded once per UTC day. When **Score History** is opened, previously recorded tickers that have no snapshot for today are refreshed once and saved. Failed refreshes are shown and retain the prior snapshot.
+
+The service-role key is used only by the Streamlit server. Row-level security is enabled, and anonymous/authenticated database roles are not granted access to the score table.
 
 See [docs/PRD.md](docs/PRD.md) for the product requirements.
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 from typing import Any
 
 import pandas as pd
@@ -20,6 +21,14 @@ from stock_screener.analysis import (
     validate_ticker,
 )
 from stock_screener.guidance import build_financial_forecast, fetch_official_guidance
+from stock_screener.score_store import (
+    ScoreStoreError,
+    build_score_snapshots,
+    fetch_latest_snapshots,
+    fetch_snapshot_history,
+    load_score_store_config,
+    save_daily_snapshots,
+)
 from stock_screener.ui.components import render_company_heading
 from stock_screener.ui.theme import apply_theme
 from stock_screener.user_data import (
@@ -44,6 +53,12 @@ if "local_user_data" not in st.session_state:
 
 user_data = st.session_state["local_user_data"]
 apply_theme(user_data["theme"])
+score_store_config = None
+score_store_config_error = None
+try:
+    score_store_config = load_score_store_config()
+except ScoreStoreError as exc:
+    score_store_config_error = str(exc)
 if st.session_state.get("local_user_data_error"):
     st.sidebar.warning(st.session_state["local_user_data_error"])
 
@@ -69,6 +84,7 @@ with st.sidebar:
             "Dashboard",
             "Stock Research",
             "Compare Stocks",
+            "Score History",
             "Watchlist",
             "Portfolio",
             "Settings",
@@ -90,6 +106,7 @@ with st.sidebar:
         navigation = {
             "Dashboard": "Overview",
             "Compare Stocks": "Comparison",
+            "Score History": "Score History",
             "Watchlist": "Watchlist",
             "Portfolio": "Portfolio",
             "Settings": "Settings",
@@ -1296,6 +1313,21 @@ scores = {
     )
     for symbol, company in companies.items()
 }
+archive_scores = {
+    symbol: _score_company(company)
+    for symbol, company in companies.items()
+}
+score_store_error = score_store_config_error
+if score_store_config is not None:
+    try:
+        save_daily_snapshots(
+            score_store_config,
+            build_score_snapshots(companies, archive_scores),
+        )
+    except ScoreStoreError as exc:
+        score_store_error = str(exc)
+if score_store_error:
+    st.sidebar.warning(f"Shared score history: {score_store_error}")
 target_score = scores[ticker]["Overall score"]
 target_upside = (
     target_fair_value / target["price"] - 1
@@ -1304,7 +1336,7 @@ target_upside = (
 )
 rating = recommendation(target_score)
 
-if navigation not in {"Watchlist", "Portfolio", "Settings"}:
+if navigation not in {"Watchlist", "Portfolio", "Settings", "Score History"}:
     render_company_heading(target, ticker)
     metric_rows = [
         (
@@ -2609,6 +2641,194 @@ elif navigation == "Risk analysis":
         "Risk scores use the existing rule-based calculation. Higher risk scores indicate greater measured risk; "
         "financial data availability and reporting periods vary by company."
     )
+
+elif navigation == "Score History":
+    st.header("Shared score history")
+    st.caption(
+        "Anonymous scorecard snapshots shared across all users of this deployment. "
+        "Each ticker is refreshed at most once per UTC day; duplicate analyses on the same day do not overwrite that day's first snapshot."
+    )
+    st.info(
+        "Scores in this archive use the same available-data scorecard for every ticker. "
+        "Valuation is N/A because DCF scores depend on ticker-specific, user-editable assumptions; "
+        "overall scores are calculated from the remaining available dimensions."
+    )
+    if score_store_config is None:
+        detail = score_store_error or (
+            "Configure SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in the deployment secrets "
+            "to enable shared storage."
+        )
+        st.error(f"Shared score history is not connected. {detail}")
+    else:
+        if score_store_error:
+            st.error(f"Could not save today's analyzed scores: {score_store_error}")
+        try:
+            latest_snapshots = fetch_latest_snapshots(score_store_config)
+            today_utc = datetime.now(timezone.utc).date().isoformat()
+            stale_tickers = sorted({
+                row["ticker"]
+                for row in latest_snapshots
+                if row.get("score_date") != today_utc
+                and row.get("ticker") not in companies
+            })
+            refresh_failures: dict[str, str] = {}
+            refreshed_snapshots = []
+            if stale_tickers:
+                today_date = datetime.fromisoformat(today_utc).date()
+                with st.spinner(
+                    f"Refreshing {len(stale_tickers)} tickers not yet analyzed today (UTC)…"
+                ):
+                    with ThreadPoolExecutor(
+                        max_workers=min(5, len(stale_tickers))
+                    ) as executor:
+                        futures = {
+                            executor.submit(_load_company, symbol): symbol
+                            for symbol in stale_tickers
+                        }
+                        for future in as_completed(futures):
+                            symbol, data, error = future.result()
+                            if data is None:
+                                refresh_failures[symbol] = (
+                                    error or "No company data was returned."
+                                )
+                                continue
+                            company = company_metrics(data)
+                            refreshed_snapshots.extend(build_score_snapshots(
+                                {symbol: company},
+                                {symbol: _score_company(company)},
+                                snapshot_date=today_date,
+                            ))
+                if refreshed_snapshots:
+                    save_daily_snapshots(score_store_config, refreshed_snapshots)
+                latest_snapshots = fetch_latest_snapshots(score_store_config)
+
+            if refresh_failures:
+                failed_symbols = ", ".join(sorted(refresh_failures))
+                st.warning(
+                    f"Could not refresh {len(refresh_failures)} ticker(s): {failed_symbols}. "
+                    "Their most recent stored scores are retained."
+                )
+                with st.expander("Refresh error details"):
+                    st.dataframe(
+                        pd.DataFrame([
+                            {"Ticker": symbol, "Error": message}
+                            for symbol, message in sorted(refresh_failures.items())
+                        ]),
+                        hide_index=True,
+                    )
+
+            latest_columns = {
+                "ticker": "Ticker",
+                "company_name": "Company",
+                "business_quality": "Business quality",
+                "financial_health": "Financial health",
+                "moat_proxy": "Moat proxy",
+                "growth": "Growth",
+                "valuation": "Valuation",
+                "technical_strength": "Technical strength",
+                "risk": "Risk",
+                "overall_score": "Overall score",
+                "coverage": "Coverage",
+                "score_date": "Score date (UTC)",
+                "analyzed_at": "Last analyzed (UTC)",
+            }
+            score_columns = [
+                "Business quality", "Financial health", "Moat proxy", "Growth",
+                "Valuation", "Technical strength", "Risk", "Overall score", "Coverage",
+            ]
+            if latest_snapshots:
+                latest_frame = pd.DataFrame(latest_snapshots)
+                latest_frame = latest_frame.reindex(columns=latest_columns).rename(
+                    columns=latest_columns
+                )
+                latest_frame[score_columns] = latest_frame[score_columns].round(1)
+                st.subheader(f"Latest score by ticker · {len(latest_frame)} stocks")
+                st.dataframe(
+                    latest_frame,
+                    hide_index=True,
+                    height=560,
+                    column_config={
+                        column: st.column_config.ProgressColumn(
+                            column,
+                            min_value=0,
+                            max_value=100,
+                            format="%.1f",
+                        )
+                        for column in score_columns
+                    },
+                    alt="Latest shared qualitative scorecard dimensions for every analyzed ticker",
+                )
+            else:
+                st.info("No ticker scores have been recorded yet.")
+
+            with st.expander("Full daily score history"):
+                history_options = ["All tickers", *sorted(
+                    row["ticker"] for row in latest_snapshots
+                )]
+                selected_history_ticker = st.selectbox(
+                    "History ticker",
+                    options=history_options,
+                    key="shared_score_history_ticker",
+                )
+                if st.button(
+                    "Load snapshots",
+                    key="load_shared_score_history",
+                    icon=":material/history:",
+                ):
+                    history_ticker = (
+                        None if selected_history_ticker == "All tickers"
+                        else selected_history_ticker
+                    )
+                    with st.spinner("Loading saved score snapshots…"):
+                        st.session_state["shared_score_history_cache"] = {
+                            "ticker": selected_history_ticker,
+                            "rows": fetch_snapshot_history(
+                                score_store_config,
+                                ticker=history_ticker,
+                            ),
+                        }
+                history_cache = st.session_state.get(
+                    "shared_score_history_cache", {}
+                )
+                if history_cache.get("ticker") == selected_history_ticker:
+                    history_rows = history_cache["rows"]
+                else:
+                    history_rows = []
+                if history_rows:
+                    history_frame = pd.DataFrame(history_rows)
+                    history_columns = [
+                        "ticker", "company_name", *[
+                            field for field in latest_columns
+                            if field not in {"ticker", "company_name", "score_date", "analyzed_at"}
+                        ],
+                        "score_date", "analyzed_at",
+                    ]
+                    history_frame = history_frame.reindex(
+                        columns=history_columns
+                    ).rename(columns=latest_columns)
+                    history_frame[score_columns] = history_frame[score_columns].round(1)
+                    st.dataframe(
+                        history_frame,
+                        hide_index=True,
+                        height=520,
+                        column_config={
+                            column: st.column_config.ProgressColumn(
+                                column,
+                                min_value=0,
+                                max_value=100,
+                                format="%.1f",
+                            )
+                            for column in score_columns
+                        },
+                        alt="Complete daily history of shared stock scorecard snapshots",
+                    )
+                else:
+                    st.info(
+                        "Select a ticker and load its saved daily snapshots. "
+                        "Choose All tickers for the complete database history."
+                    )
+        except ScoreStoreError as exc:
+            st.error(f"Could not load shared score history: {exc}")
 
 elif navigation == "Watchlist":
     st.header("Watchlist")
