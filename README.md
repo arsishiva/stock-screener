@@ -97,11 +97,13 @@ The current analysis dashboard does not use the legacy synthetic screener utilit
 - The DCF confidence score is separate from implied upside and includes historical FCF stability, scenario sensitivity, input completeness, cyclicality, normalized-FCF history, terminal-value dependence, and matched prior-guidance accuracy when enough data exists. Very high modeled upside triggers an assumption-review warning.
 - This project is for research only; it does not execute trades.
 
-## Shared score history database
+## Score history
 
-The **Score History** page stores anonymous ticker scorecards in a shared Supabase PostgreSQL database. It records analyzed tickers and available benchmarks, one snapshot per ticker per UTC day. The page shows the latest score per ticker and the complete daily snapshot history. It stores no user identifiers. Valuation is left unavailable in this shared scorecard because the existing valuation score uses user-editable, ticker-specific DCF assumptions; the overall score uses the remaining available dimensions.
+The **Score History** page prefers the shared Supabase PostgreSQL database when it is configured and reachable. Otherwise, it reads and writes a persistent SQLite archive at `~/.stock-screener/score_history.sqlite3` (on Windows, under your user profile). Set `SCORE_HISTORY_DB_PATH` to choose another local database file. The SQLite archive includes analyses made on this machine only; it is not shared with other users or devices. Local filesystems on hosted app platforms may be temporary, so use Supabase for durable shared history there.
 
-There was no shared analysis log before this feature. Historical records therefore start when the shared database is configured and the app first analyzes each ticker; earlier analyses from other users or sessions cannot be reconstructed.
+To enable shared history, create a Supabase project, run [supabase/score_history.sql](./supabase/score_history.sql) in its SQL Editor, and configure `SUPABASE_URL` plus `SUPABASE_SERVICE_ROLE_KEY` as server-side deployment secrets. For local development, put those keys in `.streamlit/secrets.toml`; never commit or expose the service-role key.
+
+Both archives record analyzed tickers and available benchmarks, one snapshot per ticker per UTC day. The page shows the latest score per ticker and the complete daily snapshot history. No user identifiers are stored. Valuation is left unavailable because the existing valuation score uses user-editable, ticker-specific DCF assumptions; the overall score uses the remaining available dimensions. Historical records start when the archive is first populated; earlier analyses cannot be reconstructed.
 
 1. Create a Supabase project and run the SQL in [supabase/score_history.sql](./supabase/score_history.sql) in its SQL Editor.
 2. Add the project URL and **service-role key** as server-side secrets. In Streamlit Community Cloud, add these to the app's Secrets settings:

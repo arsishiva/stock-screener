@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import math
 import os
+import sqlite3
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
+from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import urlsplit
 
@@ -25,6 +28,22 @@ SCORE_FIELDS = {
     "overall_score": "Overall score",
     "coverage": "Coverage",
 }
+LOCAL_DB_PATH = (
+    Path(os.getenv("SCORE_HISTORY_DB_PATH", "")).expanduser()
+    if os.getenv("SCORE_HISTORY_DB_PATH")
+    else Path.home() / ".stock-screener" / "score_history.sqlite3"
+)
+SNAPSHOT_COLUMNS = (
+    "ticker",
+    "company_name",
+    "sector",
+    "industry",
+    "currency",
+    "score_date",
+    "analyzed_at",
+    "methodology_version",
+    *SCORE_FIELDS,
+)
 
 
 @dataclass(frozen=True)
@@ -241,3 +260,101 @@ def fetch_snapshot_history(
         filters={"ticker": f"eq.{ticker.strip().upper()}"} if ticker else None,
         session=session,
     )
+
+
+def _local_connection(db_path: str | Path | None = None) -> sqlite3.Connection:
+    path = Path(db_path) if db_path is not None else LOCAL_DB_PATH
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(path, timeout=20)
+        connection.row_factory = sqlite3.Row
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS stock_score_snapshots (
+                ticker TEXT NOT NULL,
+                company_name TEXT,
+                sector TEXT,
+                industry TEXT,
+                currency TEXT,
+                score_date TEXT NOT NULL,
+                analyzed_at TEXT NOT NULL,
+                methodology_version TEXT NOT NULL,
+                business_quality REAL,
+                financial_health REAL,
+                moat_proxy REAL,
+                growth REAL,
+                valuation REAL,
+                technical_strength REAL,
+                risk REAL,
+                overall_score REAL,
+                coverage REAL,
+                UNIQUE (ticker, score_date)
+            )
+            """
+        )
+        return connection
+    except (OSError, sqlite3.Error) as exc:
+        raise ScoreStoreError(
+            f"Could not open local score history database: {exc}"
+        ) from exc
+
+
+def save_local_daily_snapshots(
+    snapshots: list[dict[str, Any]],
+    *,
+    db_path: str | Path | None = None,
+) -> None:
+    if not snapshots:
+        return
+    columns = ", ".join(SNAPSHOT_COLUMNS)
+    placeholders = ", ".join("?" for _ in SNAPSHOT_COLUMNS)
+    values = [
+        tuple(snapshot.get(column) for column in SNAPSHOT_COLUMNS)
+        for snapshot in snapshots
+    ]
+    try:
+        with closing(_local_connection(db_path)) as connection, connection:
+            connection.executemany(
+                f"INSERT OR IGNORE INTO stock_score_snapshots ({columns}) "
+                f"VALUES ({placeholders})",
+                values,
+            )
+    except sqlite3.Error as exc:
+        raise ScoreStoreError(f"Could not save local score history: {exc}") from exc
+
+
+def fetch_local_latest_snapshots(
+    *,
+    db_path: str | Path | None = None,
+) -> list[dict[str, Any]]:
+    try:
+        with closing(_local_connection(db_path)) as connection, connection:
+            rows = connection.execute(
+                "SELECT * FROM stock_score_snapshots "
+                "ORDER BY ticker ASC, score_date DESC, analyzed_at DESC"
+            ).fetchall()
+    except sqlite3.Error as exc:
+        raise ScoreStoreError(f"Could not read local score history: {exc}") from exc
+    latest_by_ticker: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        latest_by_ticker.setdefault(row["ticker"], dict(row))
+    return list(latest_by_ticker.values())
+
+
+def fetch_local_snapshot_history(
+    *,
+    ticker: str | None = None,
+    db_path: str | Path | None = None,
+) -> list[dict[str, Any]]:
+    query = "SELECT * FROM stock_score_snapshots"
+    parameters: tuple[str, ...] = ()
+    if ticker:
+        query += " WHERE ticker = ?"
+        parameters = (ticker.strip().upper(),)
+    query += " ORDER BY score_date DESC, ticker ASC"
+    try:
+        with closing(_local_connection(db_path)) as connection, connection:
+            rows = connection.execute(query, parameters).fetchall()
+    except sqlite3.Error as exc:
+        raise ScoreStoreError(f"Could not read local score history: {exc}") from exc
+    return [dict(row) for row in rows]

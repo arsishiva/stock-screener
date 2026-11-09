@@ -1,14 +1,18 @@
 import unittest
 from datetime import date, datetime, timezone
+from tempfile import TemporaryDirectory
 from unittest.mock import Mock
 
 from stock_screener.score_store import (
     ScoreStoreConfig,
     ScoreStoreError,
     build_score_snapshots,
+    fetch_local_latest_snapshots,
+    fetch_local_snapshot_history,
     fetch_latest_snapshots,
     fetch_snapshot_history,
     load_score_store_config,
+    save_local_daily_snapshots,
     save_daily_snapshots,
 )
 
@@ -125,6 +129,57 @@ class ScoreStoreTests(unittest.TestCase):
             session.request.call_args_list[1].kwargs["headers"]["Range"],
             "1000-1999",
         )
+
+    def test_local_archive_persists_latest_and_daily_history(self):
+        with TemporaryDirectory() as directory:
+            db_path = f"{directory}/scores.sqlite3"
+            snapshots = [
+                {
+                    "ticker": "AAPL",
+                    "company_name": "Apple",
+                    "score_date": "2026-11-08",
+                    "analyzed_at": "2026-11-08T12:00:00+00:00",
+                    "methodology_version": "scorecard-v1",
+                    "overall_score": 70,
+                },
+                {
+                    "ticker": "AAPL",
+                    "company_name": "Apple",
+                    "score_date": "2026-11-09",
+                    "analyzed_at": "2026-11-09T12:00:00+00:00",
+                    "methodology_version": "scorecard-v1",
+                    "overall_score": 75,
+                },
+                {
+                    "ticker": "MSFT",
+                    "company_name": "Microsoft",
+                    "score_date": "2026-11-09",
+                    "analyzed_at": "2026-11-09T12:00:00+00:00",
+                    "methodology_version": "scorecard-v1",
+                    "overall_score": 80,
+                },
+            ]
+
+            save_local_daily_snapshots(snapshots, db_path=db_path)
+            save_local_daily_snapshots(
+                [{**snapshots[1], "overall_score": 99}],
+                db_path=db_path,
+            )
+
+            latest = fetch_local_latest_snapshots(db_path=db_path)
+            history = fetch_local_snapshot_history(db_path=db_path)
+            apple_history = fetch_local_snapshot_history(
+                ticker="aapl",
+                db_path=db_path,
+            )
+
+        self.assertEqual(
+            {row["ticker"]: row["overall_score"] for row in latest},
+            {"AAPL": 75, "MSFT": 80},
+        )
+        self.assertEqual(len(history), 3)
+        self.assertEqual(len(apple_history), 2)
+        self.assertEqual(apple_history[0]["score_date"], "2026-11-09")
 
 
 if __name__ == "__main__":
