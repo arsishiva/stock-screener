@@ -2775,26 +2775,59 @@ elif navigation == "Score History":
         "Business quality", "Financial health", "Moat proxy", "Growth",
         "Valuation", "Technical strength", "Risk", "Overall score", "Coverage",
     ]
-    if latest_snapshots:
-        latest_frame = pd.DataFrame(latest_snapshots)
-        latest_frame = latest_frame.reindex(columns=latest_columns).rename(
+
+    def format_score_history_frame(rows: list[dict[str, Any]]) -> Any:
+        frame = pd.DataFrame(rows)
+        frame = frame.reindex(columns=latest_columns).rename(
             columns=latest_columns
         )
-        latest_frame[score_columns] = latest_frame[score_columns].round(1)
-        st.subheader(f"Latest score by ticker · {len(latest_frame)} stocks")
+        frame[score_columns] = frame[score_columns].round(1)
+        frame.insert(
+            0,
+            "Rating",
+            frame["Overall score"].map(
+                lambda score: recommendation(score).title()
+            ),
+        )
+
+        def score_color(value: Any, *, reverse: bool = False) -> str:
+            if pd.isna(value):
+                return ""
+            score = max(0.0, min(100.0, float(value)))
+            if reverse:
+                score = 100.0 - score
+            red, yellow, green = (248, 105, 107), (255, 235, 132), (99, 190, 123)
+            start, end, fraction = (
+                (red, yellow, score / 50)
+                if score <= 50
+                else (yellow, green, (score - 50) / 50)
+            )
+            color = tuple(
+                round(first + (last - first) * fraction)
+                for first, last in zip(start, end)
+            )
+            return "background-color: #{:02x}{:02x}{:02x}".format(*color)
+
+        def heatmap_style(column: pd.Series) -> pd.Series:
+            return column.map(
+                lambda value: score_color(value, reverse=column.name == "Risk")
+            )
+
+        return (
+            frame.style.apply(heatmap_style, subset=score_columns, axis=0)
+            .format({column: "{:.1f}" for column in score_columns}, na_rep="N/A")
+        )
+
+    if latest_snapshots:
+        st.subheader(f"Latest score by ticker · {len(latest_snapshots)} stocks")
+        st.caption(
+            "Higher scores shade from red through yellow to green. Risk is reversed: "
+            "lower risk scores are green."
+        )
         st.dataframe(
-            latest_frame,
+            format_score_history_frame(latest_snapshots),
             hide_index=True,
             height=560,
-            column_config={
-                column: st.column_config.ProgressColumn(
-                    column,
-                    min_value=0,
-                    max_value=100,
-                    format="%.1f",
-                )
-                for column in score_columns
-            },
             alt="Latest qualitative scorecard dimensions for every analyzed ticker",
         )
     else:
@@ -2857,31 +2890,10 @@ elif navigation == "Score History":
         else:
             history_rows = []
         if history_rows:
-            history_frame = pd.DataFrame(history_rows)
-            history_columns = [
-                "ticker", "company_name", *[
-                    field for field in latest_columns
-                    if field not in {"ticker", "company_name", "score_date", "analyzed_at"}
-                ],
-                "score_date", "analyzed_at",
-            ]
-            history_frame = history_frame.reindex(
-                columns=history_columns
-            ).rename(columns=latest_columns)
-            history_frame[score_columns] = history_frame[score_columns].round(1)
             st.dataframe(
-                history_frame,
+                format_score_history_frame(history_rows),
                 hide_index=True,
                 height=520,
-                column_config={
-                    column: st.column_config.ProgressColumn(
-                        column,
-                        min_value=0,
-                        max_value=100,
-                        format="%.1f",
-                    )
-                    for column in score_columns
-                },
                 alt="Complete daily history of stock scorecard snapshots",
             )
         else:
