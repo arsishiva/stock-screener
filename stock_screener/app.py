@@ -2827,7 +2827,7 @@ elif navigation == "Score History":
                     else (yellow, green, (position - 0.5) / 0.5)
                 )
                 color = tuple(round(f + (l - f) * fraction) for f, l in zip(start, end))
-                styles.append(f"background-color: #{color[0]:02x}{color[1]:02x}{color[2]:02x}")
+                styles.append(f"background-color: #{color[0]:02x}{color[1]:02x}{color[2]:02x}; color: #000000")
             return styles
 
         return (
