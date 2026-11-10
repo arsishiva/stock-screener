@@ -2790,31 +2790,48 @@ elif navigation == "Score History":
             ),
         )
 
-        def score_color(value: Any, *, reverse: bool = False) -> str:
-            if pd.isna(value):
-                return ""
-            score = max(0.0, min(100.0, float(value)))
-            if reverse:
-                score = 100.0 - score
-            red, yellow, green = (248, 105, 107), (255, 235, 132), (99, 190, 123)
-            start, end, fraction = (
-                (red, yellow, score / 50)
-                if score <= 50
-                else (yellow, green, (score - 50) / 50)
-            )
-            color = tuple(
-                round(first + (last - first) * fraction)
-                for first, last in zip(start, end)
-            )
-            return "background-color: #{:02x}{:02x}{:02x}".format(*color)
-
-        def heatmap_style(column: pd.Series) -> pd.Series:
-            return column.map(
-                lambda value: score_color(value, reverse=column.name == "Risk")
-            )
+        def color_row(row: pd.Series) -> list[str]:
+            metrics = row[score_columns]
+            valid_metrics = metrics[pd.notna(metrics)]
+            if valid_metrics.empty:
+                return [""] * len(row)
+            
+            # Risk is lower-is-better, others are higher-is-better
+            # Map Risk to (100 - score) to normalize to higher-is-better
+            normalized = valid_metrics.copy()
+            if "Risk" in normalized:
+                normalized["Risk"] = 100.0 - normalized["Risk"]
+                
+            minimum = normalized.min()
+            maximum = normalized.max()
+            
+            styles = []
+            for col in row.index:
+                if col not in score_columns:
+                    styles.append("")
+                    continue
+                val = row[col]
+                if pd.isna(val):
+                    styles.append("")
+                    continue
+                
+                score = max(0.0, min(100.0, float(val)))
+                norm_val = 100.0 - score if col == "Risk" else score
+                
+                position = (norm_val - minimum) / (maximum - minimum) if maximum != minimum else 0.5
+                position = max(0.0, min(1.0, position))
+                
+                red, yellow, green = (248, 105, 107), (255, 235, 132), (99, 190, 123)
+                start, end, fraction = (
+                    (red, yellow, position / 0.5) if position <= 0.5
+                    else (yellow, green, (position - 0.5) / 0.5)
+                )
+                color = tuple(round(f + (l - f) * fraction) for f, l in zip(start, end))
+                styles.append(f"background-color: #{color[0]:02x}{color[1]:02x}{color[2]:02x}")
+            return styles
 
         return (
-            frame.style.apply(heatmap_style, subset=score_columns, axis=0)
+            frame.style.apply(color_row, axis=1)
             .format({column: "{:.1f}" for column in score_columns}, na_rep="N/A")
         )
 
